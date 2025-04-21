@@ -47,13 +47,14 @@ interface
 
 {$DEFINE FastMM4} // FastMM4 Version
 {.$DEFINE FastMM5} // FastMM5 Version
+
 {.$DEFINE LZMA}
 
 {$DEFINE MANIFEST} // WinSxS Support
 {$DEFINE ALLOW_LOAD_FILES}
-{$DEFINE LOAD_FROM_RESOURCE} // MS add support to extract dlls from resource to load via LoadLibrary
+{$DEFINE LOAD_FROM_RESOURCE}
 {$IF Defined( LOAD_FROM_RESOURCE ) AND ( NOT Defined( FastMM4 ) AND NOT Defined( FastMM5 ) )}
-  {$DEFINE USE_STREAMS} 
+  {.$DEFINE USE_STREAMS} 
 {$IFEND}
 
 {$DEFINE GetModuleHandle_BuildImportTable} // Try GetModuleHandle for BuildImportTable
@@ -95,9 +96,61 @@ uses
   Windows;
 
 type
-  {$IF NOT DECLARED( PIMAGE_NT_HEADERS )}
-  PIMAGE_NT_HEADERS = ^IMAGE_NT_HEADERS;
-  {$IFEND}
+{$IF NOT DECLARED( PIMAGE_NT_HEADERS32 )}
+  PIMAGE_NT_HEADERS32 = ^IMAGE_NT_HEADERS;
+{$ELSE}
+  PIMAGE_NT_HEADERS32 = ^IMAGE_NT_HEADERS32;
+{$IFEND}
+
+{$IF NOT DECLARED( IMAGE_NT_HEADERS64 )}
+  _IMAGE_OPTIONAL_HEADER64 = record
+    { Standard fields. }
+    Magic: Word;
+    MajorLinkerVersion: Byte;
+    MinorLinkerVersion: Byte;
+    SizeOfCode: DWORD;
+    SizeOfInitializedData: DWORD;
+    SizeOfUninitializedData: DWORD;
+    AddressOfEntryPoint: DWORD;
+    BaseOfCode: DWORD;
+    { NT additional fields. }
+    ImageBase: ULONGLONG;
+    SectionAlignment: DWORD;
+    FileAlignment: DWORD;
+    MajorOperatingSystemVersion: Word;
+    MinorOperatingSystemVersion: Word;
+    MajorImageVersion: Word;
+    MinorImageVersion: Word;
+    MajorSubsystemVersion: Word;
+    MinorSubsystemVersion: Word;
+    Win32VersionValue: DWORD;
+    SizeOfImage: DWORD;
+    SizeOfHeaders: DWORD;
+    CheckSum: DWORD;
+    Subsystem: Word;
+    DllCharacteristics: Word;
+    SizeOfStackReserve: ULONGLONG;
+    SizeOfStackCommit: ULONGLONG;
+    SizeOfHeapReserve: ULONGLONG;
+    SizeOfHeapCommit: ULONGLONG;
+    LoaderFlags: DWORD;
+    NumberOfRvaAndSizes: DWORD;
+    DataDirectory: packed array[0..IMAGE_NUMBEROF_DIRECTORY_ENTRIES-1] of TImageDataDirectory;
+  end;
+  IMAGE_OPTIONAL_HEADER64 = _IMAGE_OPTIONAL_HEADER64;
+  PIMAGE_OPTIONAL_HEADER64 = ^IMAGE_OPTIONAL_HEADER64;
+
+  _IMAGE_NT_HEADERS64 = record
+    Signature: DWORD;
+    FileHeader: TImageFileHeader;
+    OptionalHeader: IMAGE_OPTIONAL_HEADER64;
+  end;
+  IMAGE_NT_HEADERS64 = _IMAGE_NT_HEADERS64;
+
+  PIMAGE_NT_HEADERS64 = ^IMAGE_NT_HEADERS64;
+{$ELSE}
+  PIMAGE_NT_HEADERS64 = ^IMAGE_NT_HEADERS64;
+{$IFEND}
 
   TMemoryModuleModules = record
     Handle : HMODULE;
@@ -106,27 +159,49 @@ type
     {$ENDIF GetModuleHandle_BuildImportTable}
   end;
 
+  TIMAGE_NT_HEADERS3264 = packed record
+    X64 : Boolean;
+    case Boolean of
+      False : ( headers32 : PIMAGE_NT_HEADERS32 );
+      True  : ( headers64 : PIMAGE_NT_HEADERS64 );
+  end;
+  PIMAGE_NT_HEADERS3264 = TIMAGE_NT_HEADERS3264;
+
   TMemoryModule = record
-    headers     : PIMAGE_NT_HEADERS;
+    headers     : PIMAGE_NT_HEADERS3264;
     codeBase    : Pointer; // ModuleHandle
     modules     : array of TMemoryModuleModules;
     initialized : Boolean;
     isRelocated : Boolean;
     pageSize    : Cardinal;
   end;
-  PMemoryModule = ^TMemoryModule;  
+  PMemoryModule = ^TMemoryModule;
+
+{$IF NOT DECLARED( LOAD_LIBRARY_AS_IMAGE_RESOURCE )}
+const
+  LOAD_LIBRARY_AS_IMAGE_RESOURCE     = $00000020;
+{$IFEND}
+{$IF NOT DECLARED( LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE )}
+const
+  LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE = $00000040;
+{$IFEND}
+
+{$IF NOT DECLARED( IMAGE_FILE_MACHINE_AMD64 )}
+const
+  IMAGE_FILE_MACHINE_AMD64          = $8664;  { AMD64 (K8) }
+{$IFEND}
 
   { ++++++++++++++++++++++++++++++++++++++++++++++++++
     ***  Memory DLL loading functions Declaration  ***
     -------------------------------------------------- }
 
 // return value is nil if function fails
-function MemoryLoadLibrary( data: Pointer; var Module : PMemoryModule ): ShortInt; stdcall; {$IF Defined( ALLOW_LOAD_FILES ) OR Defined( LOAD_FROM_RESOURCE )}overload;{$IFEND}
+function MemoryLoadLibrary( data: Pointer; var Module : PMemoryModule; Flags : Cardinal = 0 ): ShortInt; stdcall; {$IF Defined( ALLOW_LOAD_FILES ) OR Defined( LOAD_FROM_RESOURCE )}overload;{$IFEND}
 {$IFDEF ALLOW_LOAD_FILES}
-function MemoryLoadLibraryFile( FileName : string; var Module : PMemoryModule ): ShortInt; stdcall;
+function MemoryLoadLibraryFile( FileName : string; var Module : PMemoryModule; Flags : Cardinal = 0 ): ShortInt; stdcall;
 {$ENDIF ALLOW_LOAD_FILES}
 {$IFDEF LOAD_FROM_RESOURCE}
-function MemoryLoadLibrary( ResourceName : string; var Module : PMemoryModule{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ): ShortInt; stdcall; overload;
+function MemoryLoadLibrary( ResourceName : string; var Module : PMemoryModule; {$IFDEF USE_STREAMS}Password : string = '';{$ENDIF} Flags : Cardinal = 0 ): ShortInt; stdcall; overload;
 function MemoryResourceExists( var ResourceName : string ) : HRSRC;
 {$ENDIF LOAD_FROM_RESOURCE}
 
@@ -142,12 +217,31 @@ function MemoryGetProcAddress( module: PMemoryModule; const name: PAnsiChar ): P
 // free module
 procedure MemoryFreeLibrary( var module: PMemoryModule ); stdcall;
 
-function MemoryEnumerateImports( data: Pointer; var Modules : string; DelimiterString : String = ';' ): ShortInt; stdcall; overload;
+function CheckSumMappedFile( Module : PMemoryModule; HeaderSum : PCardinal; CheckSum : PCardinal ) : PIMAGE_NT_HEADERS32;
+
+function MemoryEnumerateImports( data: Pointer; var Modules : string; DelimiterString : String = ';'; FullPath : Boolean = False ): ShortInt;  overload;
+function MemoryEnumerateImports( ModuleData : Pointer; FileName : String; var Modules : String; DelimiterString : String = ';'; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255 ) : Int64; overload;
 {$IFDEF ALLOW_LOAD_FILES}
-function MemoryEnumerateImportsFile( FileName : string; var Modules : string; DelimiterString : String = ';' ): ShortInt; stdcall; overload;
+function MemoryEnumerateImportsFile( FileName : String; var Modules : String; DelimiterString : String = ';'; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64; overload;
 {$ENDIF}
 {$IFDEF LOAD_FROM_RESOURCE}
-function MemoryEnumerateImports( ResourceName : string; var Modules : string; DelimiterString : String = ';'{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ): ShortInt; stdcall; overload;
+function MemoryEnumerateImports( ResourceName : string; FileName : String; var Modules : String; DelimiterString : String = ';'; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64; overload;
+{$ENDIF}
+
+function MemoryEnumerateExports( ModuleData : Pointer; var AExports : String; DelimiterString : String = ';' ) : ShortInt; overload;
+{$IFDEF ALLOW_LOAD_FILES}
+function MemoryEnumerateExportsFile( FileName : String; var AExports : String; DelimiterString : String = ';'{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : ShortInt; overload;
+{$ENDIF}
+{$IFDEF LOAD_FROM_RESOURCE}
+function MemoryEnumerateExports( ResourceName : string; var AExports : String; DelimiterString : String = ';'{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : ShortInt; overload;
+{$ENDIF}
+
+function ListMissingModules( ModuleData : Pointer; FileName : String; var Modules : String; DelimiterString : String = #1310; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255 ) : Int64; overload;
+{$IFDEF ALLOW_LOAD_FILES}
+function ListMissingModules( FileName : String; var Modules : String; DelimiterString : String = #1310; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64; overload;
+{$ENDIF}
+{$IFDEF LOAD_FROM_RESOURCE}
+function ListMissingModules( ResourceName : string; FileName : String; var Modules : String; DelimiterString : String = #1310; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64; overload;
 {$ENDIF}
 
 implementation
@@ -178,7 +272,7 @@ type
   PULONGLONG = ^UINT64;
   {$IFEND}
 
-  {$IFDEF FastMM4}
+  {$IFDEF FastMM4} 
   PByte = System.PByte;
   {$ENDIF FastMM4}
 
@@ -228,9 +322,29 @@ type
   PIMAGE_TLS_DIRECTORY32 = ^_IMAGE_TLS_DIRECTORY32;
   {$IFEND}
 
-  {$IF NOT DECLARED( PIMAGE_TLS_DIRECTORY )}
-  PIMAGE_TLS_DIRECTORY = PIMAGE_TLS_DIRECTORY32;
+  {$IF NOT DECLARED( _IMAGE_TLS_DIRECTORY64 )}
+  _IMAGE_TLS_DIRECTORY64 = record
+    StartAddressOfRawData: ULONGLONG;
+    EndAddressOfRawData: ULONGLONG;
+    AddressOfIndex: ULONGLONG;         // PDWORD
+    AddressOfCallBacks: ULONGLONG;     // PIMAGE_TLS_CALLBACK *;
+    SizeOfZeroFill: DWORD;
+    Characteristics: DWORD;
+  end;
   {$IFEND}
+
+  {$IF NOT DECLARED( PIMAGE_TLS_DIRECTORY64 )}
+  PIMAGE_TLS_DIRECTORY64 = ^_IMAGE_TLS_DIRECTORY64;
+  {$IFEND}
+
+// Things that are incorrectly defined at least up to XE6 (miss x64 mapping)
+{$IFDEF CPUX64}
+type
+  PIMAGE_TLS_DIRECTORY = PIMAGE_TLS_DIRECTORY64;
+const
+  IMAGE_ORDINAL_FLAG = IMAGE_ORDINAL_FLAG64;
+type
+{$ENDIF}
 
   {$IF NOT DECLARED( PIMAGE_TLS_CALLBACK )}
   PIMAGE_TLS_CALLBACK = procedure ( DllHandle: Pointer; Reason: Cardinal; Reserved: Pointer ) stdcall;
@@ -303,14 +417,6 @@ const
   IMAGE_ORDINAL_FLAG = IMAGE_ORDINAL_FLAG32;
   HEAP_ZERO_MEMORY   = $00000008;
 {$IFEND}
-
-// Things that are incorrectly defined at least up to XE6 ( miss x64 mapping )
-{$IFDEF CPUX64}
-type
-  PIMAGE_TLS_DIRECTORY = PIMAGE_TLS_DIRECTORY64;
-const
-  IMAGE_ORDINAL_FLAG = IMAGE_ORDINAL_FLAG64;
-{$ENDIF}
 
 type
   TDllEntryProc = function( hinstDLL: HINST; fdwReason: Cardinal; lpReserved: Pointer ): BOOL; stdcall;
@@ -503,9 +609,9 @@ function ExceptionErrorMessage(ExceptObject: TObject; ExceptAddr: Pointer; Buffe
   end;
 
   function PointerToHex( P : Pointer; TypeSize : Byte; BigEndian : boolean = false ): string;
-    function ByteToHex( B : Byte ) : ShortString;
+    function ByteToHex( B : Byte ) : String;
     const
-      HexTable : Array[ 0..15 ] of AnsiChar = ( '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' );
+      HexTable : Array[ 0..15 ] of Char = ( '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' );
     begin
       result := HexTable[ b div 16 ] + HexTable[ b mod 16 ];
     end;
@@ -646,29 +752,35 @@ end;
 {$IF NOT DECLARED( IMAGE_SNAP_BY_ORDINAL )}
 //  IMAGE_SNAP_BY_ORDINAL64( Ordinal ) ( ( Ordinal & IMAGE_ORDINAL_FLAG64 ) != 0 )
 //  IMAGE_SNAP_BY_ORDINAL32( Ordinal ) ( ( Ordinal & IMAGE_ORDINAL_FLAG32 ) != 0 )
-function IMAGE_SNAP_BY_ORDINAL( Ordinal: NativeUInt ): Boolean; {$IF Defined( FPC ) OR ( CompilerVersion >= 22 )}inline;{$IFEND}
+function IMAGE_SNAP_BY_ORDINAL32( Ordinal: NativeUInt ): Boolean; {$IF Defined( FPC ) OR ( CompilerVersion >= 22 )}inline;{$IFEND}
 begin
-  Result := ( ( Ordinal and IMAGE_ORDINAL_FLAG ) <> 0 );
+  Result := ( ( Ordinal and IMAGE_ORDINAL_FLAG32 ) <> 0 );
+end;
+
+function IMAGE_SNAP_BY_ORDINAL64( Ordinal: NativeUInt ): Boolean; {$IF Defined( FPC ) OR ( CompilerVersion >= 22 )}inline;{$IFEND}
+begin
+  Result := ( ( Ordinal and IMAGE_ORDINAL_FLAG64 ) <> 0 );
 end;
 {$IFEND}
 
 function GET_HEADER_DICTIONARY( module: PMemoryModule; idx: Integer ): PIMAGE_DATA_DIRECTORY;
 begin
-  Result := PIMAGE_DATA_DIRECTORY( @( module.headers.OptionalHeader.DataDirectory[ idx ] ) );
+  if module^.headers.X64 then
+    Result := PIMAGE_DATA_DIRECTORY( @( module.headers.headers64.OptionalHeader.DataDirectory[ idx ] ) )
+  else
+    Result := PIMAGE_DATA_DIRECTORY( @( module.headers.headers32.OptionalHeader.DataDirectory[ idx ] ) );
 end;
 
-{$IF NOT DECLARED( IMAGE_FIRST_SECTION )}
-function IMAGE_FIRST_SECTION( NtHeader: PIMAGE_NT_HEADERS ): PImageSectionHeader;
+function IMAGE_FIRST_SECTION( NtHeader: PIMAGE_NT_HEADERS32 ): PImageSectionHeader;
 var
   OptionalHeaderAddr: PByte;
 begin
-  OptionalHeaderAddr := @NtHeader^.OptionalHeader;
+  OptionalHeaderAddr := PByte( @NtHeader^.OptionalHeader );
   Inc( OptionalHeaderAddr, NtHeader^.FileHeader.SizeOfOptionalHeader );
   Result := PImageSectionHeader( OptionalHeaderAddr );
 end;
-{$IFEND}
 
-function CopySections( data: Pointer; old_headers: PIMAGE_NT_HEADERS; module: PMemoryModule ): Boolean;
+function CopySections( data: Pointer; old_headers: PIMAGE_NT_HEADERS32; module: PMemoryModule ): Boolean;
 var
   i, size: Integer;
   codebase: Pointer;
@@ -676,18 +788,17 @@ var
   section: PIMAGE_SECTION_HEADER;
 begin
   codebase := module.codeBase;
-  {$IF NOT Defined( FPC ) AND ( CompilerVersion < 23 )}
-  section := PIMAGE_SECTION_HEADER( IMAGE_FIRST_SECTION( module.headers ) );
-  {$ELSE}
-  section := PIMAGE_SECTION_HEADER( IMAGE_FIRST_SECTION( module.headers{$IFNDEF FPC}^{$ENDIF} ) );
-  {$IFEND}
-  for i := 0 to module.headers.FileHeader.NumberOfSections - 1 do
+  section := PIMAGE_SECTION_HEADER( IMAGE_FIRST_SECTION( module.headers.headers32 ) );
+  for i := 0 to module.headers.headers32.FileHeader.NumberOfSections - 1 do
     begin
     // section doesn't contain data in the dll itself, but may define
     // uninitialized data
     if section.SizeOfRawData = 0 then
       begin
-      size := old_headers.OptionalHeader.SectionAlignment;
+      if module.headers.X64 then
+        size := PIMAGE_NT_HEADERS64( old_headers ).OptionalHeader.SectionAlignment
+      else
+        size := old_headers.OptionalHeader.SectionAlignment;
       if size > 0 then
         begin
         dest := VirtualAlloc( 
@@ -794,9 +905,9 @@ begin
     // section is not needed any more and can safely be freed
     if ( sectionData.address = sectionData.alignedAddress ) and
        ( sectionData.last or
-         ( module.headers.OptionalHeader.SectionAlignment = module.pageSize ) or
-         ( sectionData.size mod module.pageSize = 0 )
-       ) then
+       ( NOT module.headers.X64 AND ( module.headers.headers32.OptionalHeader.SectionAlignment = module.pageSize ) ) or
+       ( module.headers.X64 AND ( module.headers.headers64.OptionalHeader.SectionAlignment = module.pageSize ) ) or
+       ( sectionData.size mod module.pageSize = 0 ) ) then
          // Only allowed to decommit whole pages
          VirtualFree( sectionData.address, sectionData.size, MEM_DECOMMIT );
     {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}
@@ -825,9 +936,19 @@ function FinalizeSections( module: PMemoryModule ): Boolean;
     Result := section.SizeOfRawData;
     if Result = 0 then
       if ( section.Characteristics and IMAGE_SCN_CNT_INITIALIZED_DATA ) <> 0 then
-        Result := module.headers.OptionalHeader.SizeOfInitializedData
+        begin
+        if module.headers.X64 then
+          Result := module.headers.headers64.OptionalHeader.SizeOfInitializedData
+        else
+          Result := module.headers.headers32.OptionalHeader.SizeOfInitializedData;
+        end
       else if ( section.Characteristics and IMAGE_SCN_CNT_UNINITIALIZED_DATA ) <> 0 then
-        Result := module.headers.OptionalHeader.SizeOfUninitializedData;
+        begin
+        if module.headers.X64 then
+          Result := module.headers.headers64.OptionalHeader.SizeOfUninitializedData
+        else
+          Result := module.headers.headers32.OptionalHeader.SizeOfUninitializedData;
+        end;
   end;
   function ALIGN_DOWN( address: Pointer; alignment: Cardinal ): Pointer;
   begin
@@ -842,16 +963,17 @@ var
   sectionAddress, alignedAddress: Pointer;
   sectionSize: Cardinal;
 begin
-  {$IF CompilerVersion < 23}
-  section := PIMAGE_SECTION_HEADER( IMAGE_FIRST_SECTION( module.headers ) );
-  {$ELSE}
-  section := PIMAGE_SECTION_HEADER( IMAGE_FIRST_SECTION( module.headers{$IFNDEF FPC}^{$ENDIF} ) );
-  {$IFEND}
-  {$IFDEF CPUX64}
-  imageOffset := ( NativeUInt( module.codeBase ) and $ffffffff00000000 );
-  {$ELSE}
-  imageOffset := 0;
-  {$ENDIF}
+  section := PIMAGE_SECTION_HEADER( IMAGE_FIRST_SECTION( module.headers.headers32 ) );
+  if module.headers.X64 then
+    imageOffset := ( NativeUInt( module.codeBase ) and $ffffffff00000000 )
+  else
+    imageOffset := 0;
+
+//  {$IFDEF CPUX64}
+//  imageOffset := ( NativeUInt( module.codeBase ) and $ffffffff00000000 );
+//  {$ELSE}
+//  imageOffset := 0;
+//  {$ENDIF}
 
   sectionData.address := Pointer( UINT_PTR( section.Misc.PhysicalAddress ) or imageOffset );
   sectionData.alignedAddress := ALIGN_DOWN( sectionData.address, module.pageSize );
@@ -861,8 +983,7 @@ begin
   Inc( section );
 
   // loop through all sections and change access flags
-
-  for i := 1 to module.headers.FileHeader.NumberOfSections - 1 do
+  for i := 1 to module.headers.headers32.FileHeader.NumberOfSections - 1 do
     begin
     sectionAddress := Pointer( UINT_PTR( section.Misc.PhysicalAddress ) or imageOffset );
     alignedAddress := ALIGN_DOWN( sectionData.address, module.pageSize );
@@ -937,11 +1058,14 @@ var
   // the case in our code.
   function FixPtr( OldPtr: Pointer ): Pointer;
   begin
-    Result := Pointer( NativeInt( OldPtr ) - module.headers.OptionalHeader.ImageBase + NativeInt( codeBase ) );
+    if module.headers.X64 then
+      Result := Pointer( NativeInt( OldPtr ) - module.headers.headers64.OptionalHeader.ImageBase + NativeInt( codeBase ) )
+    else
+      Result := Pointer( NativeInt( OldPtr ) - module.headers.headers32.OptionalHeader.ImageBase + NativeInt( codeBase ) );
   end;
 var
   directory: PIMAGE_DATA_DIRECTORY;
-  tls: PIMAGE_TLS_DIRECTORY;
+  tls: PIMAGE_TLS_DIRECTORY32;
   callback: PPointer; // =^PIMAGE_TLS_CALLBACK;
 begin
   Result := False;
@@ -950,18 +1074,29 @@ begin
   directory := GET_HEADER_DICTIONARY( module, IMAGE_DIRECTORY_ENTRY_TLS );
   if directory.VirtualAddress = 0 then
     Exit;
-  tls := PIMAGE_TLS_DIRECTORY( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codeBase ) + directory.VirtualAddress );
+  tls := PIMAGE_TLS_DIRECTORY32( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codeBase ) + directory.VirtualAddress );
 
   // Delphi syntax is quite awkward when dealing with proc pointers so we have to
   // use casts to untyped pointers
-  callback := Pointer( tls.AddressOfCallBacks );
+  if module.headers.X64 then
+    callback := Pointer( PIMAGE_TLS_DIRECTORY64( tls ).AddressOfCallBacks )
+  else
+    callback := Pointer( tls.AddressOfCallBacks );
   if callback <> nil then
     begin
     callback := FixPtr( callback );
-
-    if ( NativeUInt( callback ) < NativeUInt( module^.codeBase ) ) or
-       ( NativeUInt( callback ) >= NativeUInt( module^.codeBase ) + Module^.headers.OptionalHeader.SizeOfCode ) then // MS Validate me
-      Exit;
+    if module.headers.X64 then
+      begin
+      if ( NativeUInt( callback ) < NativeUInt( module^.codeBase ) ) or
+         ( NativeUInt( callback ) >= NativeUInt( module^.codeBase ) + Module^.headers.headers64.OptionalHeader.SizeOfCode ) then
+        Exit;
+      end
+    else
+      begin
+      if ( NativeUInt( callback ) < NativeUInt( module^.codeBase ) ) or
+         ( NativeUInt( callback ) >= NativeUInt( module^.codeBase ) + Module^.headers.headers32.OptionalHeader.SizeOfCode ) then
+        Exit;
+      end;
 
     try
       while callback^ <> nil do
@@ -978,7 +1113,7 @@ begin
   Result := True;
 end;
 
-function PerformBaseRelocation( module: PMemoryModule; delta: NativeInt ): Boolean;
+function PerformBaseRelocation( module: PMemoryModule; delta: Int64 ): Boolean;
 var
   i: Cardinal;
   codebase: Pointer;
@@ -987,10 +1122,9 @@ var
   dest: Pointer;
   relInfo: {PUINT16}PWORD;
   patchAddrHL: PDWORD;
-// patchAddrHL: PULONGLONG; // MS Fix for MIL ... to validate
- {$IFDEF CPUX64}
+//  {$IFDEF CPUX64}
   patchAddr64: PULONGLONG;
-  {$ENDIF}
+//  {$ENDIF}
   relType, offset: Integer;
 begin
   codebase := module.codeBase;
@@ -1014,10 +1148,10 @@ begin
   while relocation.VirtualAddress > 0 do
     begin
     {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}
-    dest := Pointer( PByte( codebase ) + relocation.VirtualAddress );
+    dest    := Pointer( PByte( codebase ) + relocation.VirtualAddress );
     relInfo := Pointer( PByte( relocation ) + IMAGE_SIZEOF_BASE_RELOCATION );
     {$ELSE}
-    dest := Pointer( PAnsiChar( codebase ) + relocation.VirtualAddress );
+    dest    := Pointer( PAnsiChar( codebase ) + relocation.VirtualAddress );
     relInfo := Pointer( PAnsiChar( relocation ) + IMAGE_SIZEOF_BASE_RELOCATION );
     {$IFEND}
 
@@ -1043,14 +1177,20 @@ begin
           patchAddrHL^ := patchAddrHL^+delta;
           {$R+}
           end;
-
-        {$IFDEF CPUX64}
+//        {$IFDEF CPUX64}
         IMAGE_REL_BASED_DIR64:
           begin
-          patchAddr64 := Pointer( PByte( dest ) + offset );
-          Inc( patchAddr64^, delta );
+          if module.headers.X64 then
+            begin
+            {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}
+            patchAddr64 := Pointer( PByte( dest ) + offset );
+            {$ELSE}
+            patchAddr64 := Pointer( PAnsiChar( dest ) + offset );
+            {$IFEND}
+            Inc( patchAddr64^, delta );
+            end;
           end;
-        {$ENDIF}
+//        {$ENDIF}
       end;
 
       Inc( relInfo );
@@ -1160,7 +1300,8 @@ begin
 
     while thunkRef^ <> 0 do
       begin
-      if IMAGE_SNAP_BY_ORDINAL( thunkRef^ ) then
+      if ( module.headers.X64 AND IMAGE_SNAP_BY_ORDINAL64( thunkRef^ ) ) OR
+         ( NOT module.headers.X64 AND IMAGE_SNAP_BY_ORDINAL32( thunkRef^ ) ) then
         funcRef^ := GetProcAddress_Internal( handle, PAnsiChar( IMAGE_ORDINAL( thunkRef^ ) ) )
       else
         begin
@@ -1415,7 +1556,7 @@ begin
     {$IFDEF UnloadAllOnFinalize}
     if NOT fItems[ i ].DontUnload then
     {$ENDIF UnloadAllOnFinalize}
-    MemoryFreeLibrary( fItems[ i ].Handle );
+      MemoryFreeLibrary( fItems[ i ].Handle );
     end;
   SetLength( fItems, 0 );    
   {$IFDEF GetModuleHandleCriticalSection}
@@ -1477,7 +1618,7 @@ end;
 
 function tModuleManager.GetHandle_( Name : String ) : PMemoryModule;
 begin
-  result := GetHandle( Name, False );
+  result := GetHandle( Name{$IFDEF LOAD_FROM_RESOURCE}, False{IsResource}{$ENDIF} );
 end;
 
 function tModuleManager.GetHandle( Name : String{$IFDEF LOAD_FROM_RESOURCE}; IsResource : boolean{$ENDIF} ) : PMemoryModule;
@@ -1568,13 +1709,14 @@ end;
   { +++++++++++++++++++++++++++++++++++++++++++++++++++++
     ***  Memory DLL loading functions Implementation  ***
     ----------------------------------------------------- }
-function MemoryLoadLibrary_1( data: Pointer; var Code : Pointer; var Module : PMemoryModule ) : ShortInt; stdcall;
+function MemoryLoadLibrary_1( data: Pointer; var Code : Pointer; var Module : PMemoryModule; Flags : Cardinal = 0 ) : ShortInt; stdcall;
 var
   dos_header: PIMAGE_DOS_HEADER;
-  old_header: PIMAGE_NT_HEADERS;
+  old_header: PIMAGE_NT_HEADERS32;
 //  code,
   headers: Pointer;
-  locationdelta: NativeInt;
+  P, P2 : PByte;
+  locationdelta: Int64; // NativeInt;
   sysInfo: SYSTEM_INFO;
 begin
   Result := -9;
@@ -1593,7 +1735,7 @@ begin
       end;
 
     // old_header = ( PIMAGE_NT_HEADERS )&( ( const unsigned char * )( data ) )[ dos_header->e_lfanew ];
-    old_header := PIMAGE_NT_HEADERS( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( data ) + dos_header._lfanew );
+    old_header := PIMAGE_NT_HEADERS32( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( data ) + dos_header._lfanew );
     if old_header.Signature <> IMAGE_NT_SIGNATURE then
       begin
       Result := -6;
@@ -1601,44 +1743,97 @@ begin
       Exit;
       end;
 
-    {$IFDEF CPUX64}
-    if old_header.FileHeader.Machine <> IMAGE_FILE_MACHINE_AMD64 then
-    {$ELSE}
-    if old_header.FileHeader.Machine <> IMAGE_FILE_MACHINE_I386 then
-    {$ENDIF}
+    if ( ( LOAD_LIBRARY_AS_DATAFILE           AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE ) AND
+       ( ( LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE ) AND
+       ( ( DONT_RESOLVE_DLL_REFERENCES        AND Flags ) <> DONT_RESOLVE_DLL_REFERENCES ) AND
+       ( ( LOAD_LIBRARY_AS_IMAGE_RESOURCE     AND Flags ) <> LOAD_LIBRARY_AS_IMAGE_RESOURCE ) then
       begin
-      Result := -5;
-      SetLastError( ERROR_BAD_EXE_FORMAT );
-      Exit;
+      {$IFDEF CPUX64}
+      if ( old_header.FileHeader.Machine <> IMAGE_FILE_MACHINE_AMD64 ) then
+      {$ELSE}
+      if ( old_header.FileHeader.Machine <> IMAGE_FILE_MACHINE_I386 ) then
+      {$ENDIF}
+        begin
+        Result := -5;
+        SetLastError( ERROR_BAD_EXE_FORMAT );
+        Exit;
+        end;
+      end
+    else
+      begin
+      if ( old_header.FileHeader.Machine <> IMAGE_FILE_MACHINE_AMD64 ) AND
+         ( old_header.FileHeader.Machine <> IMAGE_FILE_MACHINE_I386 ) then
+        begin
+        Result := -5;
+        SetLastError( ERROR_BAD_EXE_FORMAT );
+        Exit;
+        end;
       end;
 
-    if ( old_header.OptionalHeader.SectionAlignment and 1 ) <> 0 then
+    if ( old_header.FileHeader.Machine = IMAGE_FILE_MACHINE_AMD64 ) then
       begin
-      // Only support section alignments that are a multiple of 2
-      Result := -4;
-      SetLastError( ERROR_BAD_EXE_FORMAT );
-      Exit;
-      end;
+      if ( PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SectionAlignment and 1 ) <> 0 then
+        begin
+        // Only support section alignments that are a multiple of 2
+        Result := -4;
+        SetLastError( ERROR_BAD_EXE_FORMAT );
+        Exit;
+        end;
 
-    // reserve memory for image of library
-    // XXX: is it correct to commit the complete memory region at once?
-    //      calling DllEntry raises an exception if we don't...
-    code := VirtualAlloc( Pointer( old_header.OptionalHeader.ImageBase ),
-                         old_header.OptionalHeader.SizeOfImage,
-                         MEM_RESERVE or MEM_COMMIT,
-                         PAGE_READWRITE );
-    if code = nil then
+      // reserve memory for image of library
+      // XXX: is it correct to commit the complete memory region at once?
+      //      calling DllEntry raises an exception if we don't...
+      code := VirtualAlloc( Pointer( PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.ImageBase ),
+                           PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfImage,
+                           MEM_RESERVE or MEM_COMMIT,
+                           PAGE_READWRITE );
+
+      if code = nil then
+        begin
+        // try to allocate memory at arbitrary position
+        code := VirtualAlloc( nil,
+                             PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfImage,
+                             MEM_RESERVE or MEM_COMMIT,
+                             PAGE_READWRITE );
+        if code = nil then
+          begin
+          Result := -3;
+          SetLastError( ERROR_OUTOFMEMORY );
+          Exit;
+          end;
+        end;
+      end
+    else
       begin
-      // try to allocate memory at arbitrary position
-      code := VirtualAlloc( nil,
+      if ( old_header.OptionalHeader.SectionAlignment and 1 ) <> 0 then
+        begin
+        // Only support section alignments that are a multiple of 2
+        Result := -4;
+        SetLastError( ERROR_BAD_EXE_FORMAT );
+        Exit;
+        end;
+
+      // reserve memory for image of library
+      // XXX: is it correct to commit the complete memory region at once?
+      //      calling DllEntry raises an exception if we don't...
+      code := VirtualAlloc( Pointer( old_header.OptionalHeader.ImageBase ),
                            old_header.OptionalHeader.SizeOfImage,
                            MEM_RESERVE or MEM_COMMIT,
                            PAGE_READWRITE );
+
       if code = nil then
         begin
-        Result := -3;
-        SetLastError( ERROR_OUTOFMEMORY );
-        Exit;
+        // try to allocate memory at arbitrary position
+        code := VirtualAlloc( nil,
+                             old_header.OptionalHeader.SizeOfImage,
+                             MEM_RESERVE or MEM_COMMIT,
+                             PAGE_READWRITE );
+        if code = nil then
+          begin
+          Result := -3;
+          SetLastError( ERROR_OUTOFMEMORY );
+          Exit;
+          end;
         end;
       end;
 
@@ -1656,25 +1851,77 @@ begin
     GetNativeSystemInfo( {$IF ( CompilerVersion < 23 ) OR Defined( FPC )}@{$IFEND}sysInfo );
     module.pageSize := sysInfo.dwPageSize;
 
-    // commit memory for headers
-    headers := VirtualAlloc( code, old_header.OptionalHeader.SizeOfHeaders, MEM_COMMIT, PAGE_READWRITE );
+    if ( old_header.FileHeader.Machine = IMAGE_FILE_MACHINE_AMD64 ) then
+      begin
+      // commit memory for headers
+      headers := VirtualAlloc( code, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfHeaders, MEM_COMMIT, PAGE_READWRITE );
 
-    // copy PE header to code
-    CopyMemory( headers, dos_header, old_header.OptionalHeader.SizeOfHeaders );
+      // copy PE header to code
+      CopyMemory( headers, dos_header, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfHeaders );
+      end
+    else
+      begin
+      // commit memory for headers
+      headers := VirtualAlloc( code, old_header.OptionalHeader.SizeOfHeaders, MEM_COMMIT, PAGE_READWRITE );
+
+      // copy PE header to code
+      CopyMemory( headers, dos_header, old_header.OptionalHeader.SizeOfHeaders );
+      end;
+
     // result->headers = ( PIMAGE_NT_HEADERS )&( ( const unsigned char * )( headers ) )[ dos_header->e_lfanew ];
-    module.headers := PIMAGE_NT_HEADERS( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( headers ) + dos_header._lfanew );
+    Module.headers.X64       := ( old_header.FileHeader.Machine = IMAGE_FILE_MACHINE_AMD64 );
+    module.headers.headers32 := PIMAGE_NT_HEADERS32( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( headers ) + dos_header._lfanew );
+
+    if ( ( LOAD_LIBRARY_AS_DATAFILE           AND Flags ) = LOAD_LIBRARY_AS_DATAFILE ) OR
+       ( ( LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE AND Flags ) = LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE ) then
+      begin
+      module^.isRelocated := False;
+      P := headers;
+      P2 := data;
+      if ( old_header.FileHeader.Machine = IMAGE_FILE_MACHINE_AMD64 ) then
+        begin
+        Inc( P, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfHeaders );
+        Inc( P2, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfHeaders );
+        CopyMemory( P, P2, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfCode );
+        Inc( P, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfCode );
+        Inc( P2, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfCode );
+        CopyMemory( P, P2, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfInitializedData );
+        Inc( P, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfInitializedData );
+        Inc( P2, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfInitializedData );
+        CopyMemory( P, P2, PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.SizeOfUninitializedData );
+        end
+      else
+        begin
+        Inc( P, old_header.OptionalHeader.SizeOfHeaders );
+        Inc( P2, old_header.OptionalHeader.SizeOfHeaders );
+        CopyMemory( P, P2, old_header.OptionalHeader.SizeOfCode );
+        Inc( P, old_header.OptionalHeader.SizeOfCode );
+        Inc( P2, old_header.OptionalHeader.SizeOfCode );
+        CopyMemory( P, P2, old_header.OptionalHeader.SizeOfInitializedData );
+        Inc( P, old_header.OptionalHeader.SizeOfInitializedData );
+        Inc( P2, old_header.OptionalHeader.SizeOfInitializedData );
+        CopyMemory( P, P2, old_header.OptionalHeader.SizeOfUninitializedData );
+        end;
+
+      result := 0;
+      Exit;
+      end;
 
     // copy sections from DLL file block to new memory location
     if not CopySections( data, old_header, module ) then
       begin
       Result := -1;
-      SetLastError( ERROR_SUCCESS );
+      SetLastError( ERROR_BAD_FORMAT );
       MemoryFreeLibrary( module );
       Exit;
       end;
 
     // adjust base address of imported data
-    locationdelta := NativeInt( code ) - old_header.OptionalHeader.ImageBase;
+    if ( old_header.FileHeader.Machine = IMAGE_FILE_MACHINE_AMD64 ) then
+      locationdelta := Int64( code ) - Int64( PIMAGE_NT_HEADERS64( old_header ).OptionalHeader.ImageBase )
+    else
+      locationdelta := Int64( code ) - Int64( old_header.OptionalHeader.ImageBase );
+
     if locationdelta <> 0 then
       module.isRelocated := PerformBaseRelocation( module, locationdelta )
     else
@@ -1778,7 +2025,7 @@ function LoadManifest( Module : THandle; var hActCtx : THandle; Cookie : PULONG_
   var
     HRes : HRSRC;
     HG   : HGlobal;
-  f      : Textfile;
+    f    : Textfile;
     S    : String;
     B    : Boolean;
   begin
@@ -1792,12 +2039,12 @@ function LoadManifest( Module : THandle; var hActCtx : THandle; Cookie : PULONG_
 //    if IsExe( Module ) then
 //      HRes := FindResource( Module, PChar( 1 ), PChar( 24 ){RT_MANIFEST} )
 //    else
-  HRes := FindResource( Module, PChar( 2 ), PChar( 24 ){RT_MANIFEST} );
-  if ( HRes <> 0 ) then
-    begin
-      HG := LoadResource( Module, HRes );
-    if HG = 0 then
+      HRes := FindResource( Module, PChar( 2 ), PChar( 24 ){RT_MANIFEST} );
+    if ( HRes <> 0 ) then
       begin
+      HG := LoadResource( Module, HRes );
+      if HG = 0 then
+        begin
         SetPrivilege( 'SeDebugPrivilege', B, B );
         Exit;
         end;
@@ -1810,13 +2057,13 @@ function LoadManifest( Module : THandle; var hActCtx : THandle; Cookie : PULONG_
 
       try
         AssignFile( f, FileName );
-      ReWrite( f );
-      WriteLn( f, S );
-      Flush( f );
+        ReWrite( f );
+        WriteLn( f, S );
+        Flush( f );
         result := True;
-    finally
-      CloseFile( f );
-    end;
+      finally
+        CloseFile( f );
+      end;
       end;
     SetPrivilege( 'SeDebugPrivilege', B, B );
   end;
@@ -1890,22 +2137,15 @@ begin
 end;
 {$ENDIF}
 
-function MemoryLoadLibrary_2( var module: PMemoryModule; Code : Pointer ): ShortInt; stdcall;
-var
-  DllEntry    : TDllEntryProc;
-  successfull : Boolean;
+function MemoryLoadLibrary_2( var module: PMemoryModule ): ShortInt; stdcall;
 {$IFDEF MANIFEST}
+var
   hActCtx     : THandle;
   Cookie      : NativeUInt;
 {$ENDIF}
-{$IF NOT Declared( SysUtils )}
-  S           : string;
-{$IFEND NOT Declared( SysUtils )}
 begin
-  result := -19;
+  result := -25;
   if NOT Assigned( Module ) then
-    Exit;
-  if NOT Assigned( Code ) then
     Exit;
 
   {$IFDEF MANIFEST}
@@ -1915,19 +2155,19 @@ begin
   end;
   {$ENDIF}
 
-  result := -18;
+  result := -24;
   try
     // load required dlls and adjust function table of imports
     if not BuildImportTable( module ) then
       begin
-      result := -17;
-  {$IFDEF MANIFEST}
-  try
-    UnloadManifest( hActCtx, Cookie );
-  except
-  end;
-  {$ENDIF}
-      SetLastError( ERROR_SUCCESS );
+      result := -23;
+      {$IFDEF MANIFEST}
+      try
+        UnloadManifest( hActCtx, Cookie );
+      except
+      end;
+      {$ENDIF}
+      SetLastError( ERROR_BAD_FORMAT );
       MemoryFreeLibrary( module );
       Exit;
       end;
@@ -1944,14 +2184,48 @@ begin
   end;
   {$ENDIF}
 
-  result := -16;
+  result := -22;
   try
     // mark memory pages depending on section headers and release
     // sections that are marked as "discardable"
     if not FinalizeSections( module ) then
       begin
-      result := -15;
-      SetLastError( ERROR_SUCCESS );
+      result := -21;
+      SetLastError( ERROR_BAD_FORMAT );
+      MemoryFreeLibrary( module );
+      Exit;
+      end;
+  except
+    // cleanup
+    MemoryFreeLibrary( module );
+    Exit;
+  end;
+
+  result := 0;
+end;
+
+function MemoryLoadLibrary_3( var module: PMemoryModule; Code : Pointer ): ShortInt; stdcall;
+var
+  DllEntry    : TDllEntryProc;
+  successfull : Boolean;
+{$IF NOT Declared( SysUtils )}
+  S           : string;
+{$IFEND NOT Declared( SysUtils )}
+begin
+  result := -37;
+  if NOT Assigned( Module ) then
+    Exit;
+  if NOT Assigned( Code ) then
+    Exit;
+
+  result := -36;
+  try
+    // mark memory pages depending on section headers and release
+    // sections that are marked as "discardable"
+    if not FinalizeSections( module ) then
+      begin
+      result := -35;
+      SetLastError( ERROR_BAD_FORMAT );
       MemoryFreeLibrary( module );
       Exit;
       end;
@@ -1960,8 +2234,8 @@ begin
     ExecuteTLS( module );
 //    if not ExecuteTLS( module ) then
 //      begin
-//      result := -14;
-//      SetLastError( ERROR_SUCCESS );
+//      result := -34;
+//      SetLastError( ERROR_BAD_FORMAT );
 //      MemoryFreeLibrary( module );
 //      Exit;
 //      end;
@@ -1972,10 +2246,14 @@ begin
   end;
 
   // get entry point of loaded library
-  result := -13;
-  if module.headers.OptionalHeader.AddressOfEntryPoint <> 0 then
+  result := -33;
+  if ( NOT module.headers.X64 AND ( module.headers.headers64.OptionalHeader.AddressOfEntryPoint <> 0 ) ) or
+     ( module.headers.X64 AND ( module.headers.headers32.OptionalHeader.AddressOfEntryPoint <> 0 ) ) then
     begin
-    @DllEntry := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( code ) + module.headers.OptionalHeader.AddressOfEntryPoint );
+    if module.headers.X64 then
+      @DllEntry := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( code ) + module.headers.headers64.OptionalHeader.AddressOfEntryPoint )
+    else
+      @DllEntry := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( code ) + module.headers.headers32.OptionalHeader.AddressOfEntryPoint );
 //    successfull := false;
     try
       successfull := DllEntry( HINST( code ), DLL_PROCESS_ATTACH, nil ); // notify library about attaching to process
@@ -1987,7 +2265,7 @@ begin
           successfull := True
         else
           begin
-          result := -12;
+          result := -32;
           MemoryFreeLibrary( module );
           Exit;
           end;
@@ -1999,7 +2277,7 @@ begin
         successfull := True
       else
         begin
-        result := -12;
+        result := -32;
         MemoryFreeLibrary( module );
         Exit;
         end;
@@ -2010,7 +2288,7 @@ begin
       SetLastError( ERROR_SUCCESS )
     else
       begin
-      result := -11;
+      result := -31;
       SetLastError( ERROR_DLL_INIT_FAILED );
       MemoryFreeLibrary( module );
       Exit;
@@ -2022,7 +2300,7 @@ begin
 end;
 
 {$IFDEF ALLOW_LOAD_FILES}
-function FileToPointer( lpFileStr: String; var Data : PByte ) : Cardinal;
+function FileToPointer( lpFileStr: String; var Data : PByte; Flags : Cardinal = FILE_SHARE_DELETE OR FILE_SHARE_READ OR FILE_SHARE_WRITE ) : Cardinal;
 var
   H   : THandle;
   Cnt : Cardinal;
@@ -2032,7 +2310,7 @@ begin
   if NOT FileExists( lpFileStr ) then
     Exit;
 
-  H := CreateFile( PChar( lpFileStr ), GENERIC_READ, FILE_SHARE_DELETE OR FILE_SHARE_READ OR FILE_SHARE_WRITE, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0 );
+  H := CreateFile( PChar( lpFileStr ), GENERIC_READ, Flags, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0 );
   if ( H = 0 ) OR ( H = INVALID_HANDLE_VALUE ) then
     Exit;
 
@@ -2043,24 +2321,24 @@ begin
   CloseHandle( H );
 end;
 
-function MemoryLoadLibraryFile( FileName : string; var Module : PMemoryModule ): ShortInt; stdcall;
+function MemoryLoadLibraryFile( FileName : string; var Module : PMemoryModule; Flags : Cardinal = 0 ): ShortInt; stdcall;
 var
-  Data    : Pointer;
-  Cnt     : Cardinal;
-  SPPath  : array of char;
-  PathStr : PChar;
+  Data      : Pointer;
+  Cnt       : Cardinal;
+  SPPath    : String;
+  pFileName : PChar;
 begin
   result := -32;
   Module := nil;
   if NOT FileExists( FileName ) then
     begin
     // EnvironmentPath
-    Cnt := SearchPath( nil, PChar( Filename ), nil, 0, nil, PathStr );
+    Cnt := SearchPath( nil{lpPath}, PChar( Filename ){lpFileName}, nil{lpExtension}, 0{nBufferLength}, nil{lpBuffer}, pFileName{lpFilePart} );
     if ( Cnt = 0 ) then
       Exit;
-    SetLength( SPPath, Cnt );
-    if ( SearchPath( nil, PChar( Filename ), nil, 255, @SPPath[ 0 ], PathStr ) > 0 ) then
-      FileName := string( SPPath );
+    SetLength( SPPath, Cnt-1 );
+    if ( SearchPath( nil{lpPath}, PChar( Filename ){lpFileName}, nil{lpExtension}, Cnt, PChar( SPPath ){lpBuffer}, pFileName{lpFilePart} ) > 0 ) then
+      FileName := SPPath;
     SetLength( SPPath, 0 );
 
     if NOT FileExists( FileName ) then
@@ -2075,10 +2353,13 @@ begin
     Exit;
     end;
 
-  result := MemoryLoadLibrary( Data, Module );
+  result := MemoryLoadLibrary( Data, Module, Flags );
   {$IFDEF GetModuleHandle}
-  if ( result = 0 ) then
-    ModuleManager.Add( Module, nil{Data}, FileName, False{IsResource} );
+  if ( ( LOAD_LIBRARY_AS_DATAFILE           AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE ) AND
+     ( ( LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE ) AND
+     ( ( DONT_RESOLVE_DLL_REFERENCES    AND Flags ) <> DONT_RESOLVE_DLL_REFERENCES ) AND
+     ( ( LOAD_LIBRARY_AS_IMAGE_RESOURCE AND Flags ) <> LOAD_LIBRARY_AS_IMAGE_RESOURCE ) AND ( result = 0 ) then
+    ModuleManager.Add( Module, nil{Data}, FileName{$IFDEF LOAD_FROM_RESOURCE}, False{IsResource}{$ENDIF} );
   {$ENDIF GetModuleHandle}
   FreeMem( Data );
 end;
@@ -2554,7 +2835,7 @@ begin
   result := FindResource( hInstance, PChar( ResourceName ), RES_TYPE_ );
 end;
 
-function MemoryLoadLibrary( ResourceName : string; var Module : PMemoryModule{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ): ShortInt; stdcall;
+function MemoryLoadLibrary( ResourceName : string; var Module : PMemoryModule; {$IFDEF USE_STREAMS}Password : string = '';{$ENDIF} Flags : Cardinal = 0 ): ShortInt; stdcall;
 const
   RES_TYPE_ = 'DLL'; // RT_RCDATA{10};
 var
@@ -2586,9 +2867,12 @@ begin
   res := ExtractPointer( Data, SizeOfResource( hInstance, HRes ), Extract{$IFDEF USE_STREAMS}, Password{$ENDIF} );
   if ( res > 0 ) then
     begin
-    result := MemoryLoadLibrary( Extract, {SizeOfResource( hInstance, HRes ),} Module );
+    result := MemoryLoadLibrary( Extract, {SizeOfResource( hInstance, HRes ),} Module, Flags );
     {$IFDEF GetModuleHandle}
-    if ( result = 0 ) then
+    if ( ( LOAD_LIBRARY_AS_DATAFILE           AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE ) AND
+       ( ( LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE ) AND
+       ( ( DONT_RESOLVE_DLL_REFERENCES    AND Flags ) <> DONT_RESOLVE_DLL_REFERENCES ) AND
+       ( ( LOAD_LIBRARY_AS_IMAGE_RESOURCE AND Flags ) <> LOAD_LIBRARY_AS_IMAGE_RESOURCE ) AND ( result = 0 ) then
       ModuleManager.Add( Module, Data, ResourceName, True{IsResource} );
     {$ENDIF GetModuleHandle}
     end
@@ -2606,25 +2890,37 @@ begin
 end;
 {$ENDIF}
 
-function MemoryLoadLibrary( data: Pointer; var Module : PMemoryModule ): ShortInt; stdcall;
+function MemoryLoadLibrary( data: Pointer; var Module : PMemoryModule; Flags : Cardinal = 0 ): ShortInt; stdcall;
 var
   Code : Pointer;
 begin
   Code   := nil;
   Module := nil;
-  result := MemoryLoadLibrary_1( data, Code, Module );
+
+  result := MemoryLoadLibrary_1( data, Code, Module, Flags );
   if ( result < 0 ) then
     Exit;
-  result := MemoryLoadLibrary_2( Module, Code );
 
-  {$IFDEF GetModuleHandle}
-  if ( result = 0 ) then
+  if ( ( LOAD_LIBRARY_AS_DATAFILE           AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE ) AND
+     ( ( LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE AND Flags ) <> LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE ) AND
+     ( ( DONT_RESOLVE_DLL_REFERENCES        AND Flags ) <> DONT_RESOLVE_DLL_REFERENCES ) AND
+     ( ( LOAD_LIBRARY_AS_IMAGE_RESOURCE     AND Flags ) <> LOAD_LIBRARY_AS_IMAGE_RESOURCE ) then
     begin
-    if NOT Assigned( ModuleManager ) then
-      ModuleManager := tModuleManager.Create;
-    ModuleManager.Add( Module, Data, '', False{IsResource} );
+    result := MemoryLoadLibrary_2( Module );
+    if ( result <> 0 ) then
+      Exit;
+
+    result := MemoryLoadLibrary_3( Module, Code );
+
+    {$IFDEF GetModuleHandle}
+    if ( result = 0 ) then
+      begin
+      if NOT Assigned( ModuleManager ) then
+        ModuleManager := tModuleManager.Create;
+      ModuleManager.Add( Module, Data, ''{$IFDEF LOAD_FROM_RESOURCE}, False{IsResource}{$ENDIF} );
+      end;
+    {$ENDIF GetModuleHandle}
     end;
-  {$ENDIF GetModuleHandle}
 end;
 
 function MemoryGetProcAddress( module: PMemoryModule; const name: PAnsiChar ): Pointer; stdcall;
@@ -2653,7 +2949,7 @@ begin
     Exit;
     end;
 
-  exportDir := PIMAGE_EXPORT_DIRECTORY( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + directory.VirtualAddress );
+  exportDir := PIMAGE_EXPORT_DIRECTORY( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + directory.VirtualAddress );
   // DLL doesn't export anything
   if ( exportDir.NumberOfNames = 0 ) or ( exportDir.NumberOfFunctions = 0 ) then
     begin
@@ -2662,12 +2958,12 @@ begin
     end;
 
   // search function name in list of exported names
-  nameRef := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 20 )}Cardinal{$IFEND}( exportDir.AddressOfNames ) );
-  ordinal := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 20 )}Cardinal{$IFEND}( exportDir.AddressOfNameOrdinals ) );
+  nameRef := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( exportDir.AddressOfNames ) );
+  ordinal := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( exportDir.AddressOfNameOrdinals ) );
   idx := -1;
   for i := 0 to exportDir.NumberOfNames - 1 do
     begin
-    if StrComp( name, PAnsiChar( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + nameRef^ ) ) = 0 then
+    if StrComp( name, PAnsiChar( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + nameRef^ ) ) = 0 then
       begin
       idx := ordinal^;
       Break;
@@ -2691,8 +2987,8 @@ begin
     end;
 
   // AddressOfFunctions contains the RVAs to the "real" functions 
-  temp := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 20 )}Cardinal{$IFEND}( exportDir.AddressOfFunctions ) + {$IF Defined( FPC ) OR ( CompilerVersion < 20 )}Cardinal{$IFEND}( idx )*4 );
-  Result := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + temp^ );
+  temp := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( exportDir.AddressOfFunctions ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( idx )*4 );
+  Result := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + temp^ );
 end;
 
 procedure MemoryFreeLibrary( var module: PMemoryModule ); stdcall;
@@ -2706,7 +3002,10 @@ begin
   if module.initialized then
     begin
     // notify library about detaching from process
-    @DllEntry := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( module.codeBase ) + module.headers.OptionalHeader.AddressOfEntryPoint );
+    if module.headers.X64 then
+      @DllEntry := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( module.codeBase ) + module.headers.headers64.OptionalHeader.AddressOfEntryPoint )
+    else
+      @DllEntry := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( module.codeBase ) + module.headers.headers32.OptionalHeader.AddressOfEntryPoint );
     DllEntry( HINST( module.codeBase ), DLL_PROCESS_DETACH, nil );
     end;
 
@@ -2731,12 +3030,95 @@ begin
   Module := nil;  
 end;
 
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+function CheckSumMappedFile( Module : PMemoryModule; HeaderSum : PCardinal; CheckSum : PCardinal ) : PIMAGE_NT_HEADERS32;
+  function ChkSum( PartialSum : Cardinal; Source : PWord; Length : Cardinal ) : Word;
+  begin
+    // Compute the word wise checksum allowing carries to occur into the
+    // high order half of the checksum longword.
+    while ( Length > 0 ) do
+      begin
+      PartialSum := PartialSum + Source^; // *Source++;
+      PartialSum := ( PartialSum SHR 16 ) + ( PartialSum AND $ffff );
+      Inc( Source );
+      Dec( Length );
+      end;
+    // Fold final carry into a single word result and return the resultant value.
+    result := ( ( ( PartialSum SHR 16 ) + PartialSum ) AND $ffff );
+  end;
+var
+  AdjustSum1 : PWord;
+  AdjustSum2 : PWord;
+  PartialSum : Word;
+  Size       : Cardinal;
+begin
+  result := nil;
+  if ( Module = nil ) then
+    Exit;
+  if ( HeaderSum = nil ) AND ( CheckSum = nil ) then
+    Exit;
+  if ( HeaderSum <> nil ) then
+    HeaderSum^ := 0;
+  if ( CheckSum <> nil ) then
+    CheckSum^ := 0;
+
+  result := PIMAGE_NT_HEADERS32( NativeUInt( Module^.codeBase ) + PImageDosHeader( Module^.codeBase )._lfanew );
+  if ( result.Signature <> IMAGE_NT_SIGNATURE ) then
+    begin
+    result := nil;
+    Exit;
+    end;
+
+  // If the file is an image file, then subtract the two checksum words
+  // in the optional header from the computed checksum before adding
+  // the file length, and set the value of the header checksum.
+  if Module^.headers.X64 then
+    begin
+    Size := Module^.headers.headers64.OptionalHeader.SizeOfImage;
+    if ( HeaderSum <> nil ) then
+      HeaderSum^ := Module^.headers.headers64.OptionalHeader.CheckSum;
+    AdjustSum1 := PWord( @Module^.headers.headers64.OptionalHeader.CheckSum );
+    AdjustSum2 := AdjustSum1;
+    Inc( AdjustSum2 );
+    end
+  else
+    begin
+    Size := Module^.headers.headers32.OptionalHeader.SizeOfImage;
+    if ( HeaderSum <> nil ) then
+      HeaderSum^ := Module^.headers.headers32.OptionalHeader.CheckSum;
+    AdjustSum1 := PWord( @Module^.headers.headers32.OptionalHeader.CheckSum );
+    AdjustSum2 := AdjustSum1;
+    Inc( AdjustSum2 );
+    end;
+
+  // Compute the checksum of the file and zero the header checksum value.
+  PartialSum := ChkSum( 0, PWord( Module.codeBase ), ( Size + 1 ) SHR 1 );
+
+  {$R-}
+  PartialSum := PartialSum - Byte( PartialSum < AdjustSum1^ );
+  PartialSum := PartialSum - AdjustSum1^;
+  PartialSum := PartialSum - Byte( PartialSum < AdjustSum2^ );
+  PartialSum := PartialSum - AdjustSum2^;
+  {$R+}
+
+  // Compute the final checksum value as the sum of the paritial checksum
+  // and the file length.
+  if ( CheckSum <> nil ) then
+    CheckSum^ := PartialSum + Size;
+end;
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Import-Enumeration
-function EnumerateImportTable( module: PMemoryModule; var Modules : String; DelimiterString : String = ';' ): Boolean; stdcall;
+function EnumerateImportTable( module: PMemoryModule; var Modules : String; DelimiterString : String = ';'; FullPath : Boolean = False ): Boolean; stdcall;
 var
   codebase: Pointer;
   directory: PIMAGE_DATA_DIRECTORY;
   importDesc: PIMAGE_IMPORT_DESCRIPTOR;
+
+  FileName : string;
+  Path     : String;
+  Cnt      : Cardinal;
+  FileStr  : PChar;
 begin
   codebase := module.codeBase;
   Result := True;
@@ -2752,26 +3134,44 @@ begin
     end;
     {$IFEND}
 
-  importDesc := PIMAGE_IMPORT_DESCRIPTOR( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + directory.VirtualAddress );
+  importDesc := PIMAGE_IMPORT_DESCRIPTOR( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + directory.VirtualAddress );
   while ( not IsBadReadPtr( importDesc, SizeOf( IMAGE_IMPORT_DESCRIPTOR ) ) ) and ( importDesc.Name <> 0 ) do
     begin
+    FileName := String( PAnsiChar( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + importDesc.Name ) );
+    if FullPath then
+      begin
+      // EnvironmentPath
+      Cnt := SearchPath( nil, PChar( Filename ), nil, 0, nil, FileStr );
+      if ( Cnt > 0 ) then
+        begin
+        SetLength( Path, Cnt-1 );
+        if ( SearchPath( nil, PChar( Filename ), nil, Cnt, PChar( Path ), FileStr ) > 0 ) then
+          begin
+          if ( Pos( #0, Path ) > 0 ) then
+            Path := Copy( Path, 1, Pos( #0, Path )-1 );
+          end
+        else
+          Path := FileName;
+        end
+      else
+        Path := FileName;
+
+      FileName := Path;
+      end;
+
     if ( Modules = '' ) then
-      Modules := PAnsiChar( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + importDesc.Name )
+      Modules := FileName
     else
-      Modules := Modules + DelimiterString + PAnsiChar( {$IF Defined( FPC ) OR ( CompilerVersion >= 20 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + importDesc.Name );
+      Modules := Modules + DelimiterString + FileName;
 
     Inc( importDesc );
     end; // while
 end;
 
-function MemoryEnumerateImports( data: Pointer; var Modules : string; DelimiterString : String = ';' ): ShortInt; stdcall;
+function MemoryEnumerateImports( data: Pointer; var Modules : string; DelimiterString : String = ';'; FullPath : Boolean = False ): ShortInt;
 var
   Code : Pointer;
   module: PMemoryModule;
-{$IFDEF MANIFEST}
-  hActCtx     : THandle;
-  Cookie      : NativeUInt;
-{$ENDIF}
 begin
   module  := nil;
   Modules := '';
@@ -2779,29 +3179,150 @@ begin
   result  := MemoryLoadLibrary_1( data, Code, module );
   if ( result = 0 ) AND Assigned( module ) then
     begin
-    {$IFDEF MANIFEST}
-    try
-      LoadManifest( THandle( module^.codeBase ), hActCtx, @Cookie );
-    except
-    end;
-    {$ENDIF}
-
-    if NOT EnumerateImportTable( module, Modules, DelimiterString ) then
+    if NOT EnumerateImportTable( module, Modules, DelimiterString, FullPath ) then
       result := -99;
-
-    {$IFDEF MANIFEST}
-    try
-      UnloadManifest( hActCtx, Cookie );
-    except
-    end;
-    {$ENDIF}
     end;
 
   MemoryFreeLibrary( module );
 end;
 
+function MemoryEnumerateImports( ModuleData : Pointer; FileName : String; var Modules : String; DelimiterString : String = ';'; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255 ) : Int64;
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+const
+  PREFIX_ : Array [ 0..1 ] of String = ( 'api-ms-win-', 'ext-ms-' );
+var
+  sChecked : String;
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  function Recurse( ModuleData : Pointer; FileName : string; RecursePath : String = ''; Level : Word = 0 ) : Cardinal;
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    function ExtractFileName(const FileName: string): string;
+      function StrScan(const Str: PChar; Chr: Char): PChar;
+      begin
+        Result := Str;
+        while Result^ <> Chr do
+        begin
+          if Result^ = #0 then
+          begin
+            Result := nil;
+            Exit;
+          end;
+          Inc(Result);
+        end;
+      end;
+    const
+      Delimiters = '\' + ':'; // PathDelim + DriveDelim
+    var
+      I: Integer;
+      P: PChar;
+    begin
+      i := Length( FileName );
+      P := PChar( Delimiters );
+      while i > 1 do
+        begin
+        if ( FileName[ i-1 ] <> #0 ) and ( StrScan( P, FileName[ i-1 ] ) <> nil ) then
+          break;
+        Dec(i);
+        end;
+      if ( i > 1 ) then
+        Result := Copy(FileName, I, Length( FileName )-I+1)
+      else
+        result := FileName;
+    end;
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    function AddToList( var List : String; Item : String; DelimiterString : String ) : boolean; overload;
+    begin
+      result := false;
+      if ( Pos( Item + DelimiterString, List ) > 0 ) then
+        Exit;
+      result := True;
+      List := List + Item + DelimiterString;
+    end;
+   //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  var
+    i       : Integer;
+    s       : string;
+    Data2   : Pointer;
+  begin
+    result := 0;
+    if NOT Assigned( ModuleData ) then
+      begin
+      if NOT FileExists( FileName ) then
+//      if ( FileName = '' ) then
+        Exit;
+      if ( MemoryEnumerateImportsFile( FileName, s, DelimiterString, True ) <> 0 ) then
+        Exit;
+      end
+    else if ( MemoryEnumerateImports( ModuleData, s, DelimiterString, True ) <> 0 ) then
+      Exit;
+
+    if ( Level > 0 ) then
+      begin
+      if ( RecursePath <> '' ) then
+        RecursePath := RecursePath + '>' + ExtractFileName( FileName )
+      else
+        RecursePath := ExtractFileName( FileName );
+      end;
+
+    while ( S <> '' ) do
+      begin
+      i := Pos( DelimiterString, s );
+      if ( i > 0 ) then
+        begin
+        FileName := Copy( S, 1, i-1 );
+        S        := Copy( S, i+Length( DelimiterString ), Length( S )-( i - Length( DelimiterString ) ) );
+        end
+      else
+        begin
+        FileName := S;
+        S        := '';
+        end;
+
+      if ( CompareString( LOCALE_USER_DEFAULT, NORM_IGNORECASE, PChar( Copy( FileName, 1, 11 ) ), Length( PREFIX_[ 0 ] ), PChar( PREFIX_[ 0 ] ), Length( PREFIX_[ 0 ] ) ) = 2 ) OR
+         ( CompareString( LOCALE_USER_DEFAULT, NORM_IGNORECASE, PChar( Copy( FileName, 1, 7 ) ), Length( PREFIX_[ 1 ] ), PChar( PREFIX_[ 1 ] ), Length( PREFIX_[ 1 ] ) ) = 2 ) then
+        Continue;
+
+      if FullPath then
+        begin
+//        if ( RecursePath = '' ) then
+          AddToList( Modules, FileName, DelimiterString )
+//        else
+//          AddToList( Modules, RecursePath + '->' + FileName, DelimiterString );
+        end
+      else
+        begin
+//        if ( RecursePath = '' ) then
+          AddToList( Modules, ExtractFileName( FileName ), DelimiterString )
+//        else
+//          AddToList( Modules, RecursePath + '->' + ExtractFileName( FileName ), DelimiterString );
+        end;
+      Inc( result );
+
+      if FileExists( FileName ) then
+        begin
+        if ( Level+1 < MaxRecurseDepth ) AND AddToList( sChecked, ExtractFileName( FileName ), ';' ) then
+          begin
+          Data2 := nil;
+          FileToPointer( FileName, PByte( Data2 ) );
+          if ( Data2 <> nil ) then
+            begin
+            Inc( Result, Recurse( Data2, FileName, RecursePath, Level+1 ) );
+            FreeMem( Data2 );
+            end;
+//          else
+//            Exit;
+          end;
+        end;
+      end;
+  end;
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+begin
+  Modules  := '';
+  sChecked := '';
+  result := Recurse( ModuleData, FileName );
+end;
+
 {$IFDEF ALLOW_LOAD_FILES}
-function MemoryEnumerateImportsFile( FileName : string; var Modules : string; DelimiterString : String = ';' ): ShortInt; stdcall;
+function MemoryEnumerateImportsFile( FileName : String; var Modules : String; DelimiterString : String = ';'; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64;
 var
   Data : Pointer;
 begin
@@ -2809,7 +3330,7 @@ begin
   FileToPointer( FileName, PByte( Data ) );
   if Assigned( Data ) then
     begin
-    result := MemoryEnumerateImports( Data, Modules, DelimiterString );
+    result := MemoryEnumerateImports( Data, FileName, Modules, DelimiterString, FullPath, MaxRecurseDepth );
     FreeMem( Data );
     end
   else
@@ -2818,7 +3339,198 @@ end;
 {$ENDIF}
 
 {$IFDEF LOAD_FROM_RESOURCE}
-function MemoryEnumerateImports( ResourceName : string; var Modules : string; DelimiterString : String = ';'{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ): ShortInt; stdcall;
+function MemoryEnumerateImports( ResourceName : string; FileName : String; var Modules : String; DelimiterString : String = ';'; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64;
+const
+  RES_TYPE_ = 'DLL'; // RT_RCDATA{10};
+var
+  HRes   : HRSRC;
+  HG     : HGlobal;
+  Data   : Pointer;
+  Extract: Pointer;
+  res    : Int64;
+begin
+  result := -32;
+  HRes := MemoryResourceExists( ResourceName );
+  if ( HRes = 0 ) then
+    Exit;
+
+  HG := LoadResource( hInstance, HRes );
+  if ( HG = 0 ) then
+    Exit;
+  Data := LockResource( HG );
+
+  Extract := nil;
+  res := ExtractPointer( Data, SizeOfResource( hInstance, HRes ), Extract{$IFDEF USE_STREAMS}, Password{$ENDIF} );
+  if ( res = 0 ) then
+    result := -31
+  else if ( res > 0 ) then
+    result := MemoryEnumerateImports( Extract, FileName, Modules, DelimiterString, FullPath, MaxRecurseDepth )
+  else
+    result := res;
+  UnlockResource( HG );
+  FreeResource( HG );
+  if ( Extract <> Data ) then
+    ReallocMem( Extract, 0 );
+end;
+{$ENDIF}
+
+function ListMissingModules( ModuleData : Pointer; FileName : String; var Modules : String; DelimiterString : String = #1310; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255 ) : Int64;
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+const
+  PREFIX_ : Array [ 0..1 ] of String = ( 'api-ms-win-', 'ext-ms-' );
+var
+  sChecked : String;
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  function Recurse( ModuleData : Pointer; FileName : string; RecursePath : String = ''; Level : Word = 0 ) : Cardinal;
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    function ExtractFileName(const FileName: string): string;
+      function StrScan(const Str: PChar; Chr: Char): PChar;
+      begin
+        Result := Str;
+        while Result^ <> Chr do
+        begin
+          if Result^ = #0 then
+          begin
+            Result := nil;
+            Exit;
+          end;
+          Inc(Result);
+        end;
+      end;
+    const
+      Delimiters = '\' + ':'; // PathDelim + DriveDelim
+    var
+      I: Integer;
+      P: PChar;
+    begin
+      i := Length( FileName );
+      P := PChar( Delimiters );
+      while i > 1 do
+        begin
+        if ( FileName[ i-1 ] <> #0 ) and ( StrScan( P, FileName[ i-1 ] ) <> nil ) then
+          break;
+        Dec(i);
+        end;
+      if ( i > 1 ) then
+        Result := Copy(FileName, I, Length( FileName )-I+1)
+      else
+        result := FileName;
+    end;
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    function AddToList( var List : String; Item : String; DelimiterString : String ) : boolean; overload;
+    begin
+      result := false;
+      if ( Pos( Item + DelimiterString, List ) > 0 ) then
+        Exit;
+      result := True;
+      List := List + Item + DelimiterString;
+    end;
+   //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  var
+    Path    : string;
+    i       : Integer;
+    s       : string;
+    Data2   : Pointer;
+  begin
+    result := 0;
+    if NOT Assigned( ModuleData ) then
+      begin
+      if NOT FileExists( FileName ) then
+//      if ( FileName = '' ) then
+        Exit;
+      if ( MemoryEnumerateImportsFile( FileName, s, DelimiterString, True ) <> 0 ) then
+        Exit;
+      end
+    else if ( MemoryEnumerateImports( ModuleData, s, DelimiterString, True ) <> 0 ) then
+      Exit;
+
+    if ( Level > 0 ) then
+      begin
+      if ( RecursePath <> '' ) then
+        RecursePath := RecursePath + '>' + ExtractFileName( FileName )
+      else
+        RecursePath := ExtractFileName( FileName );
+      end;
+
+    while ( S <> '' ) do
+      begin
+      i := Pos( DelimiterString, s );
+      if ( i > 0 ) then
+        begin
+        FileName := Copy( S, 1, i-1 );
+        S        := Copy( S, i+Length( DelimiterString ), Length( S )-( i - Length( DelimiterString ) ) );
+        end
+      else
+        begin
+        FileName := S;
+        S        := '';
+        end;
+
+      if ( CompareString( LOCALE_USER_DEFAULT, NORM_IGNORECASE, PChar( Copy( FileName, 1, 11 ) ), Length( PREFIX_[ 0 ] ), PChar( PREFIX_[ 0 ] ), Length( PREFIX_[ 0 ] ) ) = 2 ) OR
+         ( CompareString( LOCALE_USER_DEFAULT, NORM_IGNORECASE, PChar( Copy( FileName, 1, 7 ) ), Length( PREFIX_[ 1 ] ), PChar( PREFIX_[ 1 ] ), Length( PREFIX_[ 1 ] ) ) = 2 ) then
+        Continue;
+
+      if NOT FileExists( FileName ) then
+        begin
+        if FullPath then
+          begin
+          if ( RecursePath = '' ) then
+            AddToList( Modules, FileName, DelimiterString )
+          else
+            AddToList( Modules, RecursePath + '->' + FileName, DelimiterString );
+          end
+        else
+          begin
+          if ( RecursePath = '' ) then
+            AddToList( Modules, ExtractFileName( FileName ), DelimiterString )
+          else
+            AddToList( Modules, RecursePath + '->' + ExtractFileName( FileName ), DelimiterString );
+          end;
+        Inc( result );
+        end
+      else
+        begin
+        if ( Level+1 < MaxRecurseDepth ) AND AddToList( sChecked, ExtractFileName( FileName ), DelimiterString ) then
+          begin
+          Data2 := nil;
+          FileToPointer( Path, PByte( Data2 ) );
+          if Assigned( Data2 ) then
+            begin
+            Inc( Result, Recurse( Data2, FileName, RecursePath, Level+1 ) );
+            FreeMem( Data2 );
+            end;
+//          else
+//            Exit;
+          end;
+        end;
+      end;
+  end;
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+begin
+  Modules  := '';
+  sChecked := '';
+  result := Recurse( ModuleData, FileName );
+end;
+
+{$IFDEF ALLOW_LOAD_FILES}
+function ListMissingModules( FileName : String; var Modules : String; DelimiterString : String = #1310; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64;
+var
+  Data : Pointer;
+begin
+  Data := nil;
+  FileToPointer( FileName, PByte( Data ) );
+  if Assigned( Data ) then
+    begin
+    result := ListMissingModules( Data, FileName, Modules, DelimiterString, FullPath, MaxRecurseDepth );
+    FreeMem( Data );
+    end
+  else
+    result := -31;
+end;
+{$ENDIF}
+
+{$IFDEF LOAD_FROM_RESOURCE}
+function ListMissingModules( ResourceName : string; FileName : String; var Modules : String; DelimiterString : String = #1310; FullPath : Boolean = False; const MaxRecurseDepth : Word = 255{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : Int64;
 const
   RES_TYPE_ = 'DLL'; // RT_RCDATA{10};
 var
@@ -2843,7 +3555,7 @@ begin
   if ( res = 0 ) then
     result := -31
   else if ( res > 0 ) then
-    result := MemoryEnumerateImports( Extract, Modules, DelimiterString )
+    result := ListMissingModules( Extract, FileName, Modules, DelimiterString, FullPath, MaxRecurseDepth )
   else
     result := res;
   UnlockResource( HG );
@@ -2853,6 +3565,135 @@ begin
 end;
 {$ENDIF}
 
+function EnumerateExportTable( module: PMemoryModule; var AExports : String; DelimiterString : String = ';' ): Boolean; stdcall;
+var
+  codebase: Pointer;
+  idx: Integer;
+  i: Cardinal;
+  nameRef: PDWORD;
+  ordinal: PWord;
+  exportDir: PIMAGE_EXPORT_DIRECTORY;
+  directory: PIMAGE_DATA_DIRECTORY;
+//  RVA: DWORD;
+//  VA : NativeUInt;
+begin
+  Result := False;
+  if NOT Assigned( module ) then
+    Exit;
+
+  codebase := module.codeBase;
+  directory := GET_HEADER_DICTIONARY( module, IMAGE_DIRECTORY_ENTRY_EXPORT );
+  // no export table found
+  if directory.Size = 0 then
+    begin
+    SetLastError( ERROR_PROC_NOT_FOUND );
+    Exit;
+    end;
+
+  exportDir := PIMAGE_EXPORT_DIRECTORY( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + directory.VirtualAddress );
+  // DLL doesn't export anything
+  if ( exportDir.NumberOfNames = 0 ) or ( exportDir.NumberOfFunctions = 0 ) then
+    begin
+    SetLastError( ERROR_PROC_NOT_FOUND );
+    Exit;
+    end;
+
+  // search function name in list of exported names
+  nameRef := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( exportDir.AddressOfNames ) );
+  ordinal := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( exportDir.AddressOfNameOrdinals ) );
+  for i := 0 to exportDir.NumberOfNames - 1 do
+    begin
+    idx := ordinal^;
+    if ( Cardinal( idx ) > exportDir.NumberOfFunctions ) then
+      Break;
+
+//    RVA := PCardinal( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( exportDir.AddressOfFunctions ) + {$IF Defined( FPC ) OR ( CompilerVersion < 21 )}Cardinal{$IFEND}( idx )*4 )^;
+//    VA  := Pointer( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + RVA );
+
+    if ( AExports = '' ) then
+      AExports := string( PAnsiChar( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + nameRef^ ) )
+    else
+      AExports := AExports + DelimiterString + string( PAnsiChar( {$IF Defined( FPC ) OR ( CompilerVersion >= 21 )}PByte{$ELSE}PAnsiChar{$IFEND}( codebase ) + nameRef^ ) );
+
+    Inc( nameRef );
+    Inc( ordinal );
+    end;
+
+  Result := True;
+end;
+
+function MemoryEnumerateExports( ModuleData: Pointer; var AExports : string; DelimiterString : String = ';' ): ShortInt;
+var
+  Code : Pointer;
+  module: PMemoryModule;
+begin
+  module  := nil;
+  AExports := '';
+  Code    := nil;
+  result  := MemoryLoadLibrary_1( ModuleData, Code, module );
+  if ( result = 0 ) AND Assigned( module ) then
+    begin
+    if NOT EnumerateExportTable( module, AExports, DelimiterString ) then
+      result := -99;
+    end;
+
+  MemoryFreeLibrary( module );
+end;
+
+{$IFDEF ALLOW_LOAD_FILES}
+function MemoryEnumerateExportsFile( FileName : String; var AExports : String; DelimiterString : String = ';'{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : ShortInt;
+var
+  Data : Pointer;
+begin
+  Data := nil;
+  FileToPointer( FileName, PByte( Data ) );
+  if Assigned( Data ) then
+    begin
+    result := MemoryEnumerateExports( Data, AExports, DelimiterString );
+    FreeMem( Data );
+    end
+  else
+    result := -31;
+end;
+{$ENDIF}
+
+{$IFDEF LOAD_FROM_RESOURCE}
+function MemoryEnumerateExports( ResourceName : string; var AExports : String; DelimiterString : String = ';'{$IFDEF USE_STREAMS}; Password : string = ''{$ENDIF} ) : ShortInt;
+const
+  RES_TYPE_ = 'DLL'; // RT_RCDATA{10};
+var
+  HRes   : HRSRC;
+  HG     : HGlobal;
+  Data   : Pointer;
+  Extract: Pointer;
+  res    : Int64;
+begin
+  result := -32;
+  HRes := MemoryResourceExists( ResourceName );
+  if ( HRes = 0 ) then
+    Exit;
+
+  HG := LoadResource( hInstance, HRes );
+  if ( HG = 0 ) then
+    Exit;
+  Data := LockResource( HG );
+
+  Extract := nil;
+  res := ExtractPointer( Data, SizeOfResource( hInstance, HRes ), Extract{$IFDEF USE_STREAMS}, Password{$ENDIF} );
+  if ( res = 0 ) then
+    result := -31
+  else if ( res > 0 ) then
+    result := MemoryEnumerateExports( Extract, AExports, DelimiterString )
+  else
+    result := res;
+  UnlockResource( HG );
+  FreeResource( HG );
+  if ( Extract <> Data ) then
+    ReallocMem( Extract, 0 );
+end;
+{$ENDIF}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 {$IFDEF GetModuleHandle}
 function MemoryGetModuleHandle( data: Pointer ): PMemoryModule; stdcall; {$IF Defined( ALLOW_LOAD_FILES ) OR Defined( LOAD_FROM_RESOURCE )}overload;{$IFEND}
 begin
@@ -2874,7 +3715,6 @@ end;
 {$ENDIF GetModuleHandle}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 {$IF Defined( GetModuleHandle ) AND ( NOT Defined( FastMM4 ) AND NOT Defined( FastMM5 ) )}
 initialization
   if NOT Assigned( ModuleManager ) then // LoadLibrary called before initialization

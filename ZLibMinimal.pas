@@ -108,7 +108,7 @@ interface
   {.$DEFINE USE_CDECL}
 {$IFEND}
 
-{$IF ( CompilerVersion >= 31 ) AND ( CompilerVersion <= 32 )} // 10.1 Berlin, 10.2 Tokyo
+{$IF ( CompilerVersion >= 30 ) AND ( CompilerVersion <= 32 )} // 10 Seattle - 10.2 Tokyo
   {$DEFINE OBJ_EXTENSION_FOR_x64}
 {$IFEND}
 
@@ -2170,7 +2170,7 @@ type
 {$IFEND}
 
 const
-  {** return code messages **************************************************}
+  {** return code messages **************************************************}  
   _z_errmsg: array [0..9] of PAnsiChar = (
     'need dictionary',      // Z_NEED_DICT      (2)  //do not localize
     'stream end',           // Z_STREAM_END     (1)  //do not localize
@@ -2183,7 +2183,21 @@ const
     'incompatible version', // Z_VERSION_ERROR  (-6) //do not localize
     ''                                               //do not localize
     );
-
+  {$IF NOT Declared(z_errmsg) AND ( CompilerVersion < 23 )}
+  z_errmsg: array [0..9] of PAnsiChar = (
+    'need dictionary',      // Z_NEED_DICT      (2)  //do not localize
+    'stream end',           // Z_STREAM_END     (1)  //do not localize
+    '',                     // Z_OK             (0)  //do not localize
+    'file error',           // Z_ERRNO          (-1) //do not localize
+    'stream error',         // Z_STREAM_ERROR   (-2) //do not localize
+    'data error',           // Z_DATA_ERROR     (-3) //do not localize
+    'insufficient memory',  // Z_MEM_ERROR      (-4) //do not localize
+    'buffer error',         // Z_BUF_ERROR      (-5) //do not localize
+    'incompatible version', // Z_VERSION_ERROR  (-6) //do not localize
+    ''                                               //do not localize
+    );  
+  {$IFEND}
+    
   ZLevels: array[TZCompressionLevel] of Shortint = (
     Z_NO_COMPRESSION,
     Z_BEST_SPEED,
@@ -3111,7 +3125,6 @@ type
   size_t = Longint; // NativeInt;
   va_list = Pointer;
 
-{$IF ( CompilerVersion < 23 )}
 function _memcpy(dest, src: Pointer; count: size_t): Pointer; cdecl;
 begin
   Move(src^, dest^, count);
@@ -3124,7 +3137,6 @@ begin
   Result := dest;
 end;
 
-{$ELSE}
 function memcpy(dest, src: Pointer; count: size_t): Pointer; cdecl;
 begin
   Move(src^, dest^, count);
@@ -3137,6 +3149,14 @@ begin
   Result := dest;
 end;
 
+{$IFNDEF Win64}
+procedure _llmod; cdecl;
+asm
+  jmp System.@_llmod;
+end;
+{$ENDIF Win64}
+
+{$IF ( CompilerVersion >= 20 )}
 function malloc(size: size_t): Pointer; cdecl;
 begin
   GetMem(Result, size);
@@ -3146,13 +3166,6 @@ procedure free(pBlock: Pointer); cdecl;
 begin
   FreeMem(pBlock);
 end;
-
-{$IFNDEF Win64}
-procedure _llmod; cdecl;
-asm
-  jmp System.@_llmod;
-end;
-{$ENDIF Win64}
 
 const
   szMSVCRT = 'MSVCRT.DLL';
