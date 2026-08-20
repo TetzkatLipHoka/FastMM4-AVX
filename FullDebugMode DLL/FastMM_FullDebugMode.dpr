@@ -1,5 +1,5 @@
 {
-Fast Memory Manager: FullDebugMode Support DLL 1.64
+Fast Memory Manager: FullDebugMode Support DLL 1.71
 
 Description:
  Support DLL for FastMM. With this DLL available, FastMM will report debug info (unit name, line numbers, etc.) for
@@ -48,6 +48,14 @@ Change log:
  Version 1.64 (27 February 2021)
   - Implemented a return address information cache that greatly speeds up the conversion of many similar stack traces
     to text.
+ Version 1.65 (10 July 2023)
+  - Made LogStackTrace thread safe.
+ Version 1.70 (19 July 2025)
+  - Invalidate the memory map cache when a library is loaded or unloaded.
+ Version 1.71 (29 April 2026)
+  - Reduce the number of false positives in the 64-bit stack tracing code by skipping opcodes that are only valid in
+    32-bit mode.
+
 }
 
 {$IFDEF MSWINDOWS}
@@ -66,36 +74,30 @@ time.}
 // JCL_DEBUG_EXPERT_INSERTJDBG OFF
 library FastMM_FullDebugMode;
 
-{$I ..\FastMM4CompilerDefines.inc}
-
 uses
   {$ifdef JCLDebug}JCLDebug,{$endif}
   {$ifdef madExcept}madStackTrace,{$endif}
   {$ifdef EurekaLog_Legacy}ExceptionLog,{$endif}
   {$ifdef EurekaLog_V7}EFastMM4Support,{$endif}
-  SysUtils, {$IFDEF MACOS}Posix.Base, SBMapFiles {$ELSE}Windows {$ENDIF};
+  SysUtils, {$IFDEF MACOS}Posix.Base, SBMapFiles{$ELSE}Windows{$ENDIF};
 
 {$R *.res}
 
 {$StackFrames on}
-{$warn Symbol_Platform off}
+{$Warn Symbol_Platform off}
+{$Align 8}
 
 {The name of the 64-bit DLL has a '64' at the end.}
 {$if SizeOf(Pointer) = 8}
 {$LIBSUFFIX '64'}
-
 {$ifend}
 
-{FreePascal declares these itself and cannot evaluate CompilerVersion, so the
- comparison is reachable only where it is valid.}
-{$IFNDEF FPC}
 {$IF CompilerVersion <= 20}
 type
   NativeUInt = Cardinal;
   PNativeUInt = ^NativeUInt;
   NativeInt = Integer;
 {$IFEND}
-{$ENDIF}
 
 {--------------------------Return Address Info Cache --------------------------}
 {$IFDEF JCLDebug}
@@ -106,6 +108,20 @@ const
   CMaxInfoTextLength = 224;
 
 type
+  {The info text is cached and handed out as Unicode.  Source paths may contain
+  characters that the system ANSI code page cannot represent - a Japanese or
+  Cyrillic directory on a Western system - and converting through AnsiString
+  replaces those with question marks, permanently.  On a pre-Unicode compiler
+  the JCL hands us an AnsiString to begin with, so nothing is gained there for
+  mixed scripts;  the implicit conversion below still uses the ANSI code page
+  rather than assuming Latin-1, which is what makes single script non-Western
+  paths survive.}
+{$IFDEF UNICODE}
+  TInfoString = UnicodeString;
+{$ELSE}
+  TInfoString = WideString;
+{$ENDIF}
+
   {Return address info cache:  Maintains the source information for up to CReturnAddressCacheSize return addresses in
   a binary search tree.}
 
@@ -114,193 +130,152 @@ type
     ParentEntry: PReturnAddressInfo;
     ChildEntries: array[0..1] of PReturnAddressInfo;
     ReturnAddress: NativeUInt;
+    {Length in characters, not bytes.}
     InfoTextLength: Integer;
-    InfoText: array[0..CMaxInfoTextLength - 1] of AnsiChar;
+    InfoText: array[0..CMaxInfoTextLength - 1] of WideChar;
   end;
 
-  TReturnAddressInfoCache = record
+  TReturnAddressInfoCache = {$IFDEF UNICODE}record{$ELSE}object{$ENDIF}
     {Entry 0 is the root of the tree.}
     Entries: array[0..CReturnAddressCacheSize] of TReturnAddressInfo;
     NextNewEntryIndex: Integer;
-    {$IFDEF XE2AndUp}
-    function AddEntry(AReturnAddress: NativeUInt; const AReturnAddressInfoText: AnsiString): PReturnAddressInfo;
+    function AddEntry(AReturnAddress: NativeUInt; const AReturnAddressInfoText: TInfoString): PReturnAddressInfo;
     procedure DeleteEntry(AEntry: PReturnAddressInfo);
     function FindEntry(AReturnAddress: NativeUInt): PReturnAddressInfo;
-    {$ENDIF}
   end;
 
-var
-  LReturnAddressInfoCache: TReturnAddressInfoCache;
-
-{$IFDEF XE2AndUp}
-procedure TReturnAddressInfoCache.DeleteEntry(AEntry: PReturnAddressInfo);
-{$ELSE}
-procedure TReturnAddressInfoCache_DeleteEntry(AEntry: PReturnAddressInfo);
-{$ENDIF}
-var
-  LRemovedItemChildIndex, LMovedItemChildIndex: Integer;
-  LMovedItem, LChildItem: PReturnAddressInfo;
-begin
-  {$IFNDEF XE2AndUp}
-  with LReturnAddressInfoCache do
-    begin
-  {$ENDIF}
-    {Is this entry currentlty in the tree?}
-    if AEntry.ParentEntry = nil then
-      Exit;
-
-    LRemovedItemChildIndex := Ord(AEntry.ParentEntry.ChildEntries[1] = AEntry);
-
-    {Does this item have children of its own?}
-    if (NativeInt(AEntry.ChildEntries[0]) or NativeInt(AEntry.ChildEntries[1])) <> 0 then
-    begin
-      {It has children:  We need to traverse child items until we find a leaf item and then move it into this item's
-      position in the search tree.}
-      LMovedItem := AEntry;
-
-      while True do
-      begin
-        LChildItem := LMovedItem.ChildEntries[0]; //try left then right
-        if LChildItem = nil then
-        begin
-          LChildItem := LMovedItem.ChildEntries[1];
-          if LChildItem = nil then
-            Break;
-        end;
-        LMovedItem := LChildItem;
-      end;
-
-      {Disconnect the moved item from its current parent item.}
-      LMovedItemChildIndex := Ord(LMovedItem.ParentEntry.ChildEntries[1] = LMovedItem);
-      LMovedItem.ParentEntry.ChildEntries[LMovedItemChildIndex] := nil;
-
-      {Set the new parent for the moved item}
-      AEntry.ParentEntry.ChildEntries[LRemovedItemChildIndex] := LMovedItem;
-      LMovedItem.ParentEntry := AEntry.ParentEntry;
-
-      {Set the new left child for the moved item}
-      LChildItem := AEntry.ChildEntries[0];
-      if LChildItem <> nil then
-      begin
-        LMovedItem.ChildEntries[0] := LChildItem;
-        LChildItem.ParentEntry := LMovedItem;
-        AEntry.ChildEntries[0] := nil;
-      end;
-
-      {Set the new right child for the moved item}
-      LChildItem := AEntry.ChildEntries[1];
-      if LChildItem <> nil then
-      begin
-        LMovedItem.ChildEntries[1] := LChildItem;
-        LChildItem.ParentEntry := LMovedItem;
-        AEntry.ChildEntries[1] := nil;
-      end;
-
-    end
-    else
-    begin
-      {The deleted item is a leaf item:  Remove it from the tree directly.}
-      AEntry.ParentEntry.ChildEntries[LRemovedItemChildIndex] := nil;
-    end;
-    {Reset the parent for the removed item.}
-    AEntry.ParentEntry := nil;
-  {$IFNDEF XE2AndUp}
-    end;
-  {$ENDIF}
-end;
-
-{$IFDEF XE2AndUp}
-function TReturnAddressInfoCache.AddEntry(AReturnAddress: NativeUInt; const AReturnAddressInfoText: AnsiString): PReturnAddressInfo;
-{$ELSE}
-function TReturnAddressInfoCache_AddEntry(AReturnAddress: NativeUInt; const AReturnAddressInfoText: AnsiString): PReturnAddressInfo;
-{$ENDIF}
+function TReturnAddressInfoCache.AddEntry(AReturnAddress: NativeUInt; const AReturnAddressInfoText: TInfoString): PReturnAddressInfo;
 var
   LParentItem, LChildItem: PReturnAddressInfo;
   LAddressBits: NativeUInt;
   LChildIndex: Integer;
 begin
-  {$IFNDEF XE2AndUp}
-  with LReturnAddressInfoCache do
-    begin
-  {$ENDIF}
-    {Get the address of the entry to reuse. (Entry 0 is the tree root.)}
-    if NextNewEntryIndex = High(Entries) then
-      NextNewEntryIndex := 0;
-    Inc(NextNewEntryIndex);
+  {Get the address of the entry to reuse. (Entry 0 is the tree root.)}
+  if NextNewEntryIndex = High(Entries) then
+    NextNewEntryIndex := 0;
+  Inc(NextNewEntryIndex);
 
-    Result := @Entries[NextNewEntryIndex];
+  Result := @Entries[NextNewEntryIndex];
 
-    {Delete it if it is already in use}
-    {$IFDEF XE2AndUp}
-    DeleteEntry(Result);
-    {$ELSE}
-    TReturnAddressInfoCache_DeleteEntry(Result);
-    {$ENDIF}
+  {Delete it if it is already in use}
+  DeleteEntry(Result);
 
-    {Step down the tree until an open slot is found in the required direction.}
-    LParentItem := @Entries[0];
-    LAddressBits := AReturnAddress;
-    while True do
-    begin
-      {Get the current child in the appropriate direction.}
-      LChildItem := LParentItem.ChildEntries[LAddressBits and 1];
-      {No child -> This slot is available.}
-      if LChildItem = nil then
-        Break;
-      {Traverse further down the tree.}
-      LParentItem := LChildItem;
-      LAddressBits := LAddressBits shr 1;
-    end;
-    LChildIndex := LAddressBits and 1;
+  {Step down the tree until an open slot is found in the required direction.}
+  LParentItem := @Entries[0];
+  LAddressBits := AReturnAddress;
+  while True do
+  begin
+    {Get the current child in the appropriate direction.}
+    LChildItem := LParentItem.ChildEntries[LAddressBits and 1];
+    {No child -> This slot is available.}
+    if LChildItem = nil then
+      Break;
+    {Traverse further down the tree.}
+    LParentItem := LChildItem;
+    LAddressBits := LAddressBits shr 1;
+  end;
+  LChildIndex := LAddressBits and 1;
 
-    {Insert the node into the tree}
-    LParentItem.ChildEntries[LChildIndex] := Result;
-    Result.ParentEntry := LParentItem;
+  {Insert the node into the tree}
+  LParentItem.ChildEntries[LChildIndex] := Result;
+  Result.ParentEntry := LParentItem;
 
-    {Set the info text for the item.}
-    Result.ReturnAddress := AReturnAddress;
-    Result.InfoTextLength := Length(AReturnAddressInfoText);
-    if Result.InfoTextLength > CMaxInfoTextLength then
-      Result.InfoTextLength := CMaxInfoTextLength;
-    System.Move(Pointer(AReturnAddressInfoText)^, Result.InfoText, Result.InfoTextLength * SizeOf(AnsiChar));
-  {$IFNDEF XE2AndUp}
-    end;
-  {$ENDIF}
+  {Set the info text for the item.}
+  Result.ReturnAddress := AReturnAddress;
+  Result.InfoTextLength := Length(AReturnAddressInfoText);
+  if Result.InfoTextLength > CMaxInfoTextLength then
+    Result.InfoTextLength := CMaxInfoTextLength;
+  System.Move(Pointer(AReturnAddressInfoText)^, Result.InfoText, Result.InfoTextLength * SizeOf(WideChar));
 end;
 
-{$IFDEF XE2AndUp}
+procedure TReturnAddressInfoCache.DeleteEntry(AEntry: PReturnAddressInfo);
+var
+  LRemovedItemChildIndex, LMovedItemChildIndex: Integer;
+  LMovedItem, LChildItem: PReturnAddressInfo;
+begin
+  {Is this entry currentlty in the tree?}
+  if AEntry.ParentEntry = nil then
+    Exit;
+
+  LRemovedItemChildIndex := Ord(AEntry.ParentEntry.ChildEntries[1] = AEntry);
+
+  {Does this item have children of its own?}
+  if (NativeInt(AEntry.ChildEntries[0]) or NativeInt(AEntry.ChildEntries[1])) <> 0 then
+  begin
+    {It has children:  We need to traverse child items until we find a leaf item and then move it into this item's
+    position in the search tree.}
+    LMovedItem := AEntry;
+
+    while True do
+    begin
+      LChildItem := LMovedItem.ChildEntries[0]; //try left then right
+      if LChildItem = nil then
+      begin
+        LChildItem := LMovedItem.ChildEntries[1];
+        if LChildItem = nil then
+          Break;
+      end;
+      LMovedItem := LChildItem;
+    end;
+
+    {Disconnect the moved item from its current parent item.}
+    LMovedItemChildIndex := Ord(LMovedItem.ParentEntry.ChildEntries[1] = LMovedItem);
+    LMovedItem.ParentEntry.ChildEntries[LMovedItemChildIndex] := nil;
+
+    {Set the new parent for the moved item}
+    AEntry.ParentEntry.ChildEntries[LRemovedItemChildIndex] := LMovedItem;
+    LMovedItem.ParentEntry := AEntry.ParentEntry;
+
+    {Set the new left child for the moved item}
+    LChildItem := AEntry.ChildEntries[0];
+    if LChildItem <> nil then
+    begin
+      LMovedItem.ChildEntries[0] := LChildItem;
+      LChildItem.ParentEntry := LMovedItem;
+      AEntry.ChildEntries[0] := nil;
+    end;
+
+    {Set the new right child for the moved item}
+    LChildItem := AEntry.ChildEntries[1];
+    if LChildItem <> nil then
+    begin
+      LMovedItem.ChildEntries[1] := LChildItem;
+      LChildItem.ParentEntry := LMovedItem;
+      AEntry.ChildEntries[1] := nil;
+    end;
+
+  end
+  else
+  begin
+    {The deleted item is a leaf item:  Remove it from the tree directly.}
+    AEntry.ParentEntry.ChildEntries[LRemovedItemChildIndex] := nil;
+  end;
+  {Reset the parent for the removed item.}
+  AEntry.ParentEntry := nil;
+end;
+
 function TReturnAddressInfoCache.FindEntry(AReturnAddress: NativeUInt): PReturnAddressInfo;
-{$ELSE}
-function TReturnAddressInfoCache_FindEntry(AReturnAddress: NativeUInt): PReturnAddressInfo;
-{$ENDIF}
 var
   LAddressBits: NativeUInt;
   LParentItem: PReturnAddressInfo;
 begin
-  {$IFNDEF XE2AndUp}
-  with LReturnAddressInfoCache do
+  LAddressBits := AReturnAddress;
+  LParentItem := @Entries[0];
+  {Step down the tree until the item is found or there is no child item in the required direction.}
+  while True do
+  begin
+    {Get the child item in the required direction.}
+    Result := LParentItem.ChildEntries[LAddressBits and 1];
+    {If there is no child, or the child's key value matches the search key value then we're done.}
+    if (Result = nil)
+      or (Result.ReturnAddress = AReturnAddress) then
     begin
-  {$ENDIF}
-    LAddressBits := AReturnAddress;
-    LParentItem := @Entries[0];
-    {Step down the tree until the item is found or there is no child item in the required direction.}
-    while True do
-    begin
-      {Get the child item in the required direction.}
-      Result := LParentItem.ChildEntries[LAddressBits and 1];
-      {If there is no child, or the child's key value matches the search key value then we're done.}
-      if (Result = nil)
-        or (Result.ReturnAddress = AReturnAddress) then
-      begin
-        Exit;
-      end;
-      {The child key value is not a match -> Move down the tree.}
-      LParentItem := Result;
-      LAddressBits := LAddressBits shr 1;
+      Exit;
     end;
-  {$IFNDEF XE2AndUp}
-    end;
-  {$ENDIF}
+    {The child key value is not a match -> Move down the tree.}
+    LParentItem := Result;
+    LAddressBits := LAddressBits shr 1;
+  end;
 end;
 {$ENDIF JCLDebug}
 
@@ -323,15 +298,26 @@ end;
 
 {$if SizeOf(Pointer) = 8}
 
-function CaptureStackBackTrace(FramesToSkip, FramesToCapture: DWORD;
-  BackTrace: Pointer; BackTraceHash: PDWORD): Word;
+function CaptureStackBackTrace(FramesToSkip, FramesToCapture: DWORD; BackTrace: Pointer; BackTraceHash: PDWORD): Word;
   external kernel32 name 'RtlCaptureStackBackTrace';
 
 {We use the Windows API to do frame based stack tracing under 64-bit.}
-procedure GetFrameBasedStackTrace(AReturnAddresses: PNativeUInt;
-  AMaxDepth, ASkipFrames: Cardinal);
+procedure GetFrameBasedStackTrace(AReturnAddresses: PNativeUInt; AMaxDepth, ASkipFrames: Cardinal);
+type
+{$PointerMath On}
+  PNativeUIntArray = ^NativeUInt;
+{$PointerMath Off}
+var
+  LCapturedFrameCount: Cardinal;
 begin
-  CaptureStackBackTrace(ASkipFrames, AMaxDepth, AReturnAddresses, nil);
+  LCapturedFrameCount := CaptureStackBackTrace(ASkipFrames, AMaxDepth, AReturnAddresses, nil);
+
+  {Clear trailing entries}
+  while LCapturedFrameCount < AMaxDepth do
+  begin
+    PNativeUIntArray(AReturnAddresses)[LCapturedFrameCount] := 0;
+    Inc(LCapturedFrameCount);
+  end;
 end;
 
 {$else}
@@ -390,6 +376,27 @@ var
   MemoryPageAccessMap: array[0..1024 * 1024 - 1] of TMemoryPageAccess;
 
 {$IFDEF MSWINDOWS}
+
+procedure InvalidateMemoryPageAccessMap(ABaseAddress: Pointer; ASize: NativeUInt);
+const
+  CPageSize = 4096;
+var
+  LStartPage, LEndPage: NativeUInt;
+  LPageCount: NativeInt;
+begin
+  if ASize = 0 then
+    Exit;
+
+  LStartPage := NativeUInt(ABaseAddress) div CPageSize;
+  LEndPage := LStartPage + (ASize - 1) div CPageSize;
+  if LEndPage > High(MemoryPageAccessMap) then
+    LEndPage := High(MemoryPageAccessMap);
+
+  LPageCount := LEndPage - LStartPage + 1;
+  if LPageCount > 0 then
+    FillChar(MemoryPageAccessMap[LStartPage], LPageCount, Ord(mpaUnknown));
+end;
+
 {Updates the memory page access map. Currently only supports the low 4GB of address space.}
 procedure UpdateMemoryPageAccessMap(AAddress: NativeUInt);
 var
@@ -437,7 +444,7 @@ asm
   fldcw L8087CW
 end;
 
-{$IFDEF XE2AndUp}
+{$if CompilerVersion > 22}
 {Thread-safe version that avoids the global variable DefaultMXCSR.}
 procedure SetMXCSR(ANewMXCSR: Cardinal);
 var
@@ -453,7 +460,7 @@ asm
   ldmxcsr LMXCSR
 @exit:
 end;
-{$ENDIF}
+{$ifend}
 
 {$IFDEF MSWINDOWS}
 {Returns true if the return address is a valid call site.  This function is only safe to call while exceptions are
@@ -464,7 +471,7 @@ var
   DefaultMXCSR : Cardinal = $1900;
 
 function GetMXCSR: Cardinal;
-{$IFDEF Win32}
+{$IF Defined( Win32 )}
 asm
 {$IFDEF PIC}
         XOR     EAX, EAX
@@ -484,8 +491,7 @@ asm
         POP     EAX
 @@NOSSE:
 end;
-{$ELSE}
-{$IFDEF Win64}
+{$ELSEIF defined( Win64 )}
 asm
         PUSH    0
         STMXCSR [RSP].DWord
@@ -493,14 +499,13 @@ asm
 end;
 {$ELSE}
 {$MESSAGE ERROR 'Unknown platform'}
-{$ENDIF}
-{$ENDIF}
+{$IFEND}
 {$IFEND}
 
-function IsValidCallSite(AReturnAddress: NativeUInt): boolean;
+function IsValidCallSite(AReturnAddress: NativeUInt): Boolean;
   {$IF NOT Declared( SetMXCSR )}
   procedure SetMXCSR(NewMXCSR: Cardinal);
-  {$IFDEF Win32}
+  {$IF defined(Win32)}
   begin
     if TestSSE = 0 then exit;
     DefaultMXCSR := NewMXCSR and $FFC0;  // Remove status flag bits
@@ -513,8 +518,7 @@ function IsValidCallSite(AReturnAddress: NativeUInt): boolean;
   {$ENDIF !PIC}
     end;
   end;
-  {$ELSE}
-  {$IFDEF Win64}
+  {$ELSEIF defined(Win64)}
   asm
           AND     ECX, $FFC0 // Remove flag bits
           MOV     DefaultMXCSR, ECX
@@ -522,8 +526,7 @@ function IsValidCallSite(AReturnAddress: NativeUInt): boolean;
   end;
   {$ELSE}
   {$MESSAGE ERROR 'Unknown platform'}
-  {$ENDIF}
-  {$ENDIF}
+  {$IFEND}
   {$IFEND}
 var
   LCallAddress: NativeUInt;
@@ -531,7 +534,7 @@ var
   LOld8087CW: Word;
   LOldMXCSR: Cardinal;
 begin
-  {We assume (for now) that all code will execute within the first 4GB of address space.}
+  {We assume (for now) that all application code will execute within the first 4GB of address space.}
   if (AReturnAddress > $ffff) {$if SizeOf(Pointer) = 8}and (AReturnAddress <= $ffffffff){$IFEND} then
   begin
     {The call address is up to 8 bytes before the return address}
@@ -615,12 +618,14 @@ begin
           Result := True;
           Exit;
         end;
+{$ifndef CPUX64} //The 9A cp opcode is not valid in 64-bit mode
         {7 bytes, CALL FAR $1234:12345678}
         if (LCode8Back and $0000FF00) = $00009A00 then
         begin
           Result := True;
           Exit;
         end;
+{$endif}
         {Not a valid call site}
         Result := False;
       except
@@ -652,8 +657,7 @@ function _NSGetExecutablePath(buf: PAnsiChar; BufSize: PCardinal): Integer; cdec
 
 procedure GetRawStackTrace(AReturnAddresses: PNativeUInt; AMaxDepth, ASkipFrames: Cardinal);
 var
-  LStackTop, LStackBottom, LCurrentFrame, LNextFrame, LReturnAddress,
-    LStackAddress: NativeUInt;
+  LStackTop, LStackBottom, LCurrentFrame, LNextFrame, LReturnAddress, LStackAddress: NativeUInt;
   LLastOSError: Cardinal;
 
 {$IFDEF MACOS}
@@ -786,17 +790,322 @@ begin
   {$ENDIF}
 end;
 
+{--------------------------DLL load and unload notifications--------------------------}
+
+{$IFDEF MSWINDOWS}
+
+type
+
+  UNICODE_STRING = record
+    Length: Word;
+    MaximumLength: Word;
+    Buffer: PWideChar;
+  end;
+  PUNICODE_STRING = ^UNICODE_STRING;
+
+  TCLDR_DLL_NOTIFICATION_DATA = record
+    Flags: Cardinal;                //Reserved.
+    FullDllName: PUNICODE_STRING;   //The full path name of the DLL module.
+    BaseDllName: PUNICODE_STRING;   //The base file name of the DLL module.
+    DllBase: Pointer;               //A pointer to the base address for the DLL in memory.
+    SizeOfImage: Cardinal;          //The size of the DLL image, in bytes.
+  end;
+  PCLDR_DLL_NOTIFICATION_DATA = ^TCLDR_DLL_NOTIFICATION_DATA;
+
+  TLdrDllNotification = procedure(NotificationReason: Cardinal; NotificationData: PCLDR_DLL_NOTIFICATION_DATA;
+    Context: Pointer); stdcall;
+
+  TLdrRegisterDllNotification = function(Flags: Cardinal; NotificationFunction: TLdrDllNotification;
+    Context: Pointer; var Cookie: Pointer): LongInt; stdcall;
+
+  TLdrUnregisterDllNotification = function(Cookie: Pointer): LongInt; stdcall;
+
+procedure LdrDllNotification(NotificationReason: Cardinal; NotificationData: PCLDR_DLL_NOTIFICATION_DATA;
+  Context: Pointer); stdcall;
+begin
+  InvalidateMemoryPageAccessMap(NotificationData.DllBase, NotificationData.SizeOfImage);
+end;
+
+var
+  DllNotificationCookie: Pointer = nil;
+
+procedure RegisterDLLLoadAndUnloadNotifications;
+var
+  LdrRegisterDllNotification: TLdrRegisterDllNotification;
+begin
+  if DllNotificationCookie <> nil then
+    Exit;
+
+  {Attempt to register notifications when a DLL is loaded or unloaded.}
+  LdrRegisterDllNotification := GetProcAddress(GetModuleHandle('NTDLL.DLL'), 'LdrRegisterDllNotification');
+  if Assigned(LdrRegisterDllNotification) then
+  begin
+    if LdrRegisterDllNotification(0, LdrDllNotification, nil, DllNotificationCookie) <> ERROR_SUCCESS then
+      DllNotificationCookie := nil;
+  end;
+
+  if DllNotificationCookie = nil then
+    OutputDebugString('FastMM_FullDebugMode: Failed to register DLL load and unload notifications.');
+end;
+
+procedure UnregisterDLLLoadAndUnloadNotifications;
+var
+  LdrUnregisterDllNotification: TLdrUnregisterDllNotification;
+begin
+  if DllNotificationCookie = nil then
+    Exit;
+
+  LdrUnregisterDllNotification := GetProcAddress(GetModuleHandle('NTDLL.DLL'), 'LdrUnregisterDllNotification');
+  if Assigned(LdrUnregisterDllNotification)
+    and (LdrUnregisterDllNotification(DllNotificationCookie) = ERROR_SUCCESS) then
+  begin
+    DllNotificationCookie := nil;
+  end;
+
+  if DllNotificationCookie <> nil then
+    OutputDebugString('FastMM_FullDebugMode: Failed to deregister DLL load and unload notifications.');
+end;
+
+procedure DllMain(AReason: Integer);
+begin
+  if AReason = DLL_PROCESS_DETACH then
+    UnregisterDLLLoadAndUnloadNotifications;
+end;
+
+{$ENDIF}
+
+{------------------------------------------}
+{--------Atomic calls for Delphi XE2-------}
+{------------------------------------------}
+
+{$IF RTLVersion < 24.00}
+
+(*
+function AtomicIncrement(var Target: Cardinal): Cardinal; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  // <-- EAX Result
+  MOV     EAX, 1
+  LOCK XADD [RCX], EAX
+  INC     EAX
+{$ELSE}
+  // --> EAX Target
+  // <-- EAX Result
+  MOV     ECX, EAX
+  MOV     EAX, 1
+  LOCK XADD [ECX], EAX
+  INC     EAX
+{$ENDIF}
+end;
+
+function AtomicIncrement(var Target: Integer): Integer; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  // <-- EAX Result
+  MOV     EAX, 1
+  LOCK XADD [RCX], EAX
+  INC     EAX
+{$ELSE}
+  // --> EAX Target
+  // <-- EAX Result
+  MOV     ECX, EAX
+  MOV     EAX, 1
+  LOCK XADD [ECX], EAX
+  INC     EAX
+{$ENDIF}
+end;
+
+function AtomicIncrement(var Target: NativeUInt; Value: NativeUInt): NativeUInt; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  //     RDX Value
+  // <-- RAX Result
+  MOV     RAX, RDX
+  LOCK XADD [RCX], RAX
+  ADD     RAX, RDX
+{$ELSE}
+  // --> EAX Target
+  //     EDX Value
+  // <-- EAX Result
+  MOV     ECX, EAX
+  MOV     EAX, EDX
+  LOCK XADD [ECX], EAX
+  ADD     EAX, EDX
+{$ENDIF}
+end;
+
+function AtomicDecrement(var Target: Integer): Integer; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  // <-- EAX Result
+  MOV     EAX, -1
+  LOCK XADD [RCX], EAX
+  DEC     EAX
+{$ELSE}
+  // --> EAX Target
+  // <-- EAX Result
+  MOV     ECX, EAX
+  MOV     EAX, -1
+  LOCK XADD [ECX], EAX
+  DEC     EAX
+{$ENDIF}
+end;
+
+function AtomicDecrement(var Target: NativeUInt; Value: NativeUInt): NativeUInt; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  //     RDX Value
+  // <-- RAX Result
+  NEG     RDX
+  MOV     RAX, RDX
+  LOCK XADD [RCX], RAX
+  ADD     RAX, RDX
+{$ELSE}
+  // --> EAX Target
+  //     EDX Value
+  // <-- EAX Result
+  MOV     ECX, EAX
+  NEG     EDX
+  MOV     EAX, EDX
+  LOCK XADD [ECX], EAX
+  ADD     EAX, EDX
+{$ENDIF}
+end;
+
+function AtomicExchange(var Target: Integer; Value: Integer): Integer; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  //     EDX Value
+  // <-- EAX Result
+  MOV     EAX, EDX
+  //     RCX Target
+  //     EAX Value
+  LOCK XCHG [RCX], EAX
+{$ELSE}
+  // --> EAX Target
+  //     EDX Value
+  // <-- EAX Result
+  MOV     ECX, EAX
+  MOV     EAX, EDX
+  //     ECX Target
+  //     EAX Value
+  LOCK XCHG [ECX], EAX
+{$ENDIF}
+end;
+
+function AtomicExchange(var Target: Pointer; Value: Pointer): Pointer; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  //     RDX Value
+  // <-- RAX Result
+  MOV     RAX, RDX
+  LOCK XCHG [RCX], RAX
+{$ELSE}
+  // --> EAX Target
+  //     EDX Value
+  // <-- EAX Result
+  MOV     ECX, EAX
+  MOV     EAX, EDX
+  //     ECX Target
+  //     EAX Value
+  LOCK XCHG [ECX], EAX
+{$ENDIF}
+end;
+*)
+
+function AtomicCmpExchange(var Target: Integer; Value: Integer; Compare: Integer): Integer; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  //     EDX Value
+  //     R8  Compare
+  // <-- EAX Result
+  MOV     RAX, R8
+  //     RCX Target
+  //     EDX Value
+  //     RAX Compare
+  LOCK CMPXCHG [RCX], EDX
+{$ELSE}
+  // --> EAX Target
+  //     EDX Value
+  //     ECX Compare
+  // <-- EAX Result
+  XCHG    EAX, ECX
+  //     EAX Compare
+  //     EDX Value
+  //     ECX Target
+  LOCK CMPXCHG [ECX], EDX
+{$ENDIF}
+end;
+
+function AtomicCmpExchange(var Target: Int64; Value: Int64; Compare: Int64): Int64; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  //     RDX Value
+  //     R8  Compare
+  // <-- RAX Result
+  MOV     RAX, R8
+  LOCK CMPXCHG [RCX], RDX
+{$ELSE}
+  PUSH EBX
+  PUSH EDI
+  MOV EDI, EAX  // Target
+  MOV EAX, DWORD PTR [Compare]
+  MOV EDX, DWORD PTR [Compare+4]
+  MOV EBX, DWORD PTR [Value]
+  MOV ECX, DWORD PTR [Value+4]
+  LOCK CMPXCHG8B QWORD PTR [EDI]
+  POP EDI
+  POP EBX
+{$ENDIF}
+end;
+
+function AtomicCmpExchange(var Target: Pointer; Value: Pointer; Compare: Pointer): Pointer; overload;
+asm
+{$IFDEF CPUX64}
+  // --> RCX Target
+  //     RDX Value
+  //     R8  Compare
+  // <-- RAX Result
+  MOV     RAX, R8
+  //     RCX Target
+  //     RDX Value
+  //     RAX Compare
+  LOCK CMPXCHG [RCX], RDX
+{$ELSE}
+  // --> EAX Target
+  //     EDX Value
+  //     ECX Compare
+  // <-- EAX Result
+  XCHG    EAX, ECX
+  //     EAX Comp
+  //     EDX Value
+  //     ECX Target
+  LOCK CMPXCHG [ECX], EDX
+{$ENDIF}
+end;
+
+{$IFEND}
+
 {-----------------------------Stack Trace Logging----------------------------}
 
 {Gets the textual representation of the stack trace into ABuffer and returns a pointer to the position just after the
 last character.}
 {$ifdef JCLDebug}
 {Converts an unsigned integer to a hexadecimal string at the buffer location, returning the new buffer position.}
-function NativeUIntToHexBuf(ANum: NativeUInt; APBuffer: PAnsiChar): PAnsiChar;
+function NativeUIntToHexBuf(ANum: NativeUInt; APBuffer: PWideChar): PWideChar;
 const
   MaxDigits = 16;
 var
-  LDigitBuffer: array[0..MaxDigits - 1] of AnsiChar;
+  LDigitBuffer: array[0..MaxDigits - 1] of WideChar;
   LCount: Cardinal;
   LDigit: NativeUInt;
 begin
@@ -807,16 +1116,18 @@ begin
     ANum := ANum div 16;
     LDigit := LDigit - ANum * 16;
     Inc(LCount);
-    LDigitBuffer[MaxDigits - LCount] := HexTable[LDigit];
+    {HexTable holds AnsiChars;  the digits are all ASCII, so widening them one by
+     one is exact.}
+    LDigitBuffer[MaxDigits - LCount] := WideChar(HexTable[LDigit]);
   until ANum = 0;
   {Add leading zeros}
   while LCount < SizeOf(NativeUInt) * 2 do
   begin
     Inc(LCount);
-    LDigitBuffer[MaxDigits - LCount] := '0';
+    LDigitBuffer[MaxDigits - LCount] := WideChar('0');
   end;
   {Copy the digits to the output buffer and advance it}
-  System.Move(LDigitBuffer[MaxDigits - LCount], APBuffer^, LCount);
+  System.Move(LDigitBuffer[MaxDigits - LCount], APBuffer^, LCount * SizeOf(WideChar));
   Result := APBuffer + LCount;
 end;
 
@@ -827,7 +1138,15 @@ begin
     AString := Format('%s[%s]', [AString, AInfo]);
 end;
 
-function LogStackTrace(AReturnAddresses: PNativeUInt; AMaxDepth: Cardinal; ABuffer: PAnsiChar): PAnsiChar;
+var
+  LReturnAddressInfoCache: TReturnAddressInfoCache;
+  LLogStackTrace_Locked: Integer; //0 = unlocked, 1 = locked
+
+function LogStackTraceW(AReturnAddresses: PNativeUInt; AMaxDepth: Cardinal;
+  ABuffer, ABufferEnd: PWideChar): PWideChar;
+const
+  {Carriage return, line feed and the hexadecimal address.}
+  CFixedCharsPerEntry = 2 + SizeOf(NativeUInt) * 2;
 var
   LInd: Cardinal;
   LAddress: NativeUInt;
@@ -836,28 +1155,35 @@ var
   P: PChar;
   LLocationCacheInitialized: Boolean;
   LPInfo: PReturnAddressInfo;
+  LCharsToCopy: Integer;
 begin
   LLocationCacheInitialized := False;
 
   Result := ABuffer;
+
+  {This routine is protected by a lock - only one thread can be inside it at any given time.}
+  while AtomicCmpExchange(LLogStackTrace_Locked, 1, 0) <> 0 do
+    {Winapi.Windows.}SwitchToThread;
+
   try
     for LInd := 0 to AMaxDepth - 1 do
     begin
       LAddress := AReturnAddresses^;
       if LAddress = 0 then
         Exit;
-      Result^ := #13;
+      {Stop rather than run past the end of the caller's buffer.  The legacy
+       entry point had no way to express this, which is the second reason for
+       the new one.}
+      if Result + CFixedCharsPerEntry > ABufferEnd then
+        Exit;
+      Result^ := WideChar(#13);
       Inc(Result);
-      Result^ := #10;
+      Result^ := WideChar(#10);
       Inc(Result);
       Result := NativeUIntToHexBuf(LAddress, Result);
 
       {If the info for the return address is not yet in the cache, add it.}
-      {$IFDEF XE2AndUp}
       LPInfo := LReturnAddressInfoCache.FindEntry(LAddress);
-      {$ELSE}
-      LPInfo := TReturnAddressInfoCache_FindEntry(LAddress);
-      {$ENDIF}
 
       if LPInfo = nil then
       begin
@@ -878,22 +1204,27 @@ begin
         {Remove UnitName from ProcedureName, no need to output it twice}
         P := PChar(LInfo.ProcedureName);
         if (StrLComp(P, PChar(LInfo.UnitName), Length(LInfo.UnitName)) = 0) and (P[Length(LInfo.UnitName)] = '.') then
-          AppendInfoToString(LTempStr, Copy(LInfo.ProcedureName, Length(LInfo.UnitName) + 2{$IFNDEF XE2AndUp},Length( LInfo.ProcedureName )-Length( LInfo.UnitName )-1{$ENDIF}))
+          AppendInfoToString(LTempStr, Copy(LInfo.ProcedureName, Length(LInfo.UnitName) + 2{$IF CompilerVersion < 23},Length( LInfo.ProcedureName )-Length( LInfo.UnitName )-1{$IFEND}))
         else
           AppendInfoToString(LTempStr, LInfo.ProcedureName);
 
         if LInfo.LineNumber <> 0 then
           AppendInfoToString(LTempStr, IntToStr(LInfo.LineNumber));
 
-        {$IFDEF XE2AndUp}
-        LPInfo := LReturnAddressInfoCache.AddEntry(LAddress, AnsiString(LTempStr));
-        {$ELSE}
-        LPInfo := TReturnAddressInfoCache_AddEntry(LAddress, AnsiString(LTempStr));
-        {$ENDIF}
-      end;
+        {No AnsiString round trip:  on a Unicode compiler LTempStr already holds
+         whatever the source path contains, and casting it down to the ANSI code
+         page is exactly what used to destroy it.  On a pre-Unicode compiler such
+         as Delphi 7 the implicit widening below goes through the ANSI code page,
+         which is the best that can be done when the JCL itself hands us ANSI
+         text:  a single script non-Western path survives, mixed scripts cannot.}
+        LPInfo := LReturnAddressInfoCache.AddEntry(LAddress, LTempStr);
+        end;
 
-      System.Move(LPInfo.InfoText, Result^, LPInfo.InfoTextLength);
-      Inc(Result, LPInfo.InfoTextLength);
+      LCharsToCopy := LPInfo.InfoTextLength;
+      if Result + LCharsToCopy > ABufferEnd then
+        LCharsToCopy := ABufferEnd - Result;
+      System.Move(LPInfo.InfoText, Result^, LCharsToCopy * SizeOf(WideChar));
+      Inc(Result, LCharsToCopy);
 
       Inc(AReturnAddresses);
     end;
@@ -904,7 +1235,53 @@ begin
       EndGetLocationInfoCache;
       {$IFEND}
     end;
+
+    LLogStackTrace_Locked := 0;
   end;
+end;
+
+{The version 4 entry point, kept so that existing callers keep working:  FastMM4
+ and versions of FastMM5 that do not know about LogStackTraceW still import this
+ name.  It produces the same ANSI text as before, question marks and all - that
+ is unavoidable through a PAnsiChar interface, and callers that want the source
+ path intact should import LogStackTraceW instead.
+
+ The legacy signature carries no buffer end, so the limit is derived the way the
+ old implementation implicitly assumed it:  FastMM allows 256 characters per
+ stack trace entry.}
+function LogStackTrace(AReturnAddresses: PNativeUInt; AMaxDepth: Cardinal; ABuffer: PAnsiChar): PAnsiChar;
+const
+  CMaxCharsPerEntry = 256;
+  {Bounds the local buffer.  FastMM never asks for more than 64 entries.}
+  CMaxEntries = 64;
+var
+  LWideBuffer: array[0..CMaxEntries * CMaxCharsPerEntry - 1] of WideChar;
+  LDepth: Cardinal;
+  LWideStart, LWideEnd: PWideChar;
+  LCharCount, LBytesWritten: Integer;
+begin
+  LDepth := AMaxDepth;
+  if LDepth > CMaxEntries then
+    LDepth := CMaxEntries;
+
+  LWideStart := @LWideBuffer[0];
+  LWideEnd := LogStackTraceW(AReturnAddresses, LDepth, LWideStart,
+    LWideStart + LDepth * CMaxCharsPerEntry);
+  LCharCount := LWideEnd - LWideStart;
+  if LCharCount <= 0 then
+  begin
+    Result := ABuffer;
+    Exit;
+  end;
+
+  {Down to the ANSI code page for the legacy caller.  Characters the code page
+   cannot represent become the default replacement character, which is the loss
+   this entry point exists to remain compatible with.}
+  LBytesWritten := WideCharToMultiByte(CP_ACP, 0, @LWideBuffer[0], LCharCount,
+    ABuffer, LCharCount, nil, nil);
+  if LBytesWritten < 0 then
+    LBytesWritten := 0;
+  Result := ABuffer + LBytesWritten;
 end;
 {$endif}
 
@@ -923,6 +1300,52 @@ begin
     true,  //show relative line number offset to procedure entry point?
     false  //skip special noise reduction processing?
     );
+end;
+
+{madStackTrace.FastMM_LogStackTrace only speaks PAnsiChar, but StackAddrToStr
+ returns a UnicodeString for a single address, so the text can be assembled here
+ without ever passing through the ANSI code page.  That makes this build as
+ Unicode capable as the JCL one rather than merely converting correctly.
+
+ madExcept formats the address into the line itself, so unlike the JCL branch
+ this one does not prepend it.}
+function LogStackTraceW(AReturnAddresses: PNativeUInt; AMaxDepth: Cardinal;
+  ABuffer, ABufferEnd: PWideChar): PWideChar;
+var
+  LInd: Cardinal;
+  LAddress: NativeUInt;
+  LLine: UnicodeString;
+  LCharsToCopy: Integer;
+begin
+  Result := ABuffer;
+  for LInd := 0 to AMaxDepth - 1 do
+  begin
+    LAddress := AReturnAddresses^;
+    if LAddress = 0 then
+      Exit;
+
+    LLine := madStackTrace.StackAddrToStr(Pointer(LAddress),
+      True,  //show relative address offset to procedure entrypoint?
+      True); //show relative line number offset to procedure entry point?
+
+    if Result + 2 > ABufferEnd then
+      Exit;
+    Result^ := WideChar(#13);
+    Inc(Result);
+    Result^ := WideChar(#10);
+    Inc(Result);
+
+    LCharsToCopy := Length(LLine);
+    if Result + LCharsToCopy > ABufferEnd then
+      LCharsToCopy := ABufferEnd - Result;
+    if LCharsToCopy > 0 then
+    begin
+      System.Move(Pointer(LLine)^, Result^, LCharsToCopy * SizeOf(WideChar));
+      Inc(Result, LCharsToCopy);
+    end;
+
+    Inc(AReturnAddresses);
+  end;
 end;
 {$endif}
 
@@ -1143,27 +1566,101 @@ begin
   FreeMemory(Info);
 end;
 {$ENDIF Win32}
+{$if (not declared(LogStackTraceW))}
+{The Unicode entry point for the builds that get their stack trace text from a
+ third party library which offers no Unicode route of its own.  Those libraries
+ hand out ANSI text, so a source path has already lost whatever the code page
+ cannot represent before this library sees it - nothing here can bring that back.
+
+ What it does fix is the other half of the problem:  the caller used to widen the
+ ANSI text by assuming Latin-1, which mangles every code page that is not 1252.
+ Converting through the actual code page instead means a Cyrillic path on a
+ Russian system, or a Japanese path on a Japanese system, arrives intact.  Only
+ scripts mixed within one path stay out of reach for these builds.}
+function LogStackTraceW(AReturnAddresses: PNativeUInt; AMaxDepth: Cardinal;
+  ABuffer, ABufferEnd: PWideChar): PWideChar;
+const
+  CMaxCharsPerEntry = 256;
+  {FastMM never asks for more than 64 entries.}
+  CMaxEntries = 64;
+var
+  LAnsiBuffer: array[0..CMaxEntries * CMaxCharsPerEntry - 1] of AnsiChar;
+  LDepth: Cardinal;
+  LAnsiEnd: PAnsiChar;
+  LByteCount, LCharsAvailable: Integer;
+{$IFNDEF MSWINDOWS}
+  LWideText: TInfoString;
+  LAnsiText: AnsiString;
+{$ENDIF}
+begin
+  Result := ABuffer;
+
+  LDepth := AMaxDepth;
+  if LDepth > CMaxEntries then
+    LDepth := CMaxEntries;
+
+  LAnsiEnd := LogStackTrace(AReturnAddresses, LDepth, @LAnsiBuffer[0]);
+  LByteCount := LAnsiEnd - @LAnsiBuffer[0];
+  if LByteCount <= 0 then
+    Exit;
+
+  LCharsAvailable := ABufferEnd - ABuffer;
+  if LCharsAvailable <= 0 then
+    Exit;
+
+{$IFDEF MSWINDOWS}
+  Result := ABuffer + MultiByteToWideChar(CP_ACP, 0, @LAnsiBuffer[0], LByteCount,
+    ABuffer, LCharsAvailable);
+{$ELSE}
+  {No Windows code page API here;  the RTL conversion is the platform correct
+   one, which on POSIX means UTF-8 rather than a code page.}
+  SetLength(LAnsiText, LByteCount);
+  System.Move(LAnsiBuffer[0], Pointer(LAnsiText)^, LByteCount);
+  LWideText := TInfoString(LAnsiText);
+  if Length(LWideText) < LCharsAvailable then
+    LCharsAvailable := Length(LWideText);
+  System.Move(Pointer(LWideText)^, ABuffer^, LCharsAvailable * SizeOf(WideChar));
+  Result := ABuffer + LCharsAvailable;
+{$ENDIF}
+end;
+{$ifend}
 
 {-----------------------------Exported Functions----------------------------}
 
 exports
   GetFrameBasedStackTrace,
   GetRawStackTrace,
-  LogStackTrace;
+{$IFDEF MSWINDOWS}
+  InvalidateMemoryPageAccessMap,
+{$ENDIF}
+  {The version 4 entry point.  Kept for callers that predate LogStackTraceW.}
+  LogStackTrace,
+  {Hands out the stack trace text as Unicode, and takes a buffer end so it
+   cannot run past the caller's buffer.}
+  LogStackTraceW;
 
 begin
 {$ifdef JCLDebug}
-{$IFNDEF XE2AndUp}
-{$IFDEF Win32} // Win32 or OSX32
+{$IF CompilerVersion < 23}
+{$IF defined( Win32 )} // Win32 or OSX32
   TestSSE := GetBriefSSEType;
   DefaultMXCSR := GetMXCSR and $FFC0;  // Remove flag bits;
-{$ELSE}
-{$IFDEF Win64} // Win64
+{$ELSEIF defined( Win64 )} // Win64
   TestSSE := $3; // SSE & SSE2 are available on X64
-{$ENDIF}
-{$ENDIF}
-{$ENDIF}
+{$IFEND}
+{$IFEND}
 
   JclStackTrackingOptions := JclStackTrackingOptions + [stAllModules];
 {$endif}
+
+{$IFDEF MSWINDOWS}
+
+  {When this DLL is unloaded we need to unregister DLL load and unload notifications.}
+  DLLProc := DllMain;
+
+  {The memory map used by the stack tracing code must be updated whenever a DLL is loaded or unloaded.}
+  RegisterDLLLoadAndUnloadNotifications;
+
+{$ENDIF}
+
 end.

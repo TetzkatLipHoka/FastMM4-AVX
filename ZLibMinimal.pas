@@ -22,25 +22,25 @@
 *    2014.06.04  updated Zlib library version 1.2.8 and review               *
 *                  header translation                                        *
 *    2010.10.01  updated to zlib version 1.2.5, full translation of zlib.h   *
-*                  fixed some unsigned types, and link against the CRTL to   *
+*                  fixed some unsigned types, and link against the crtl to   *
 *                  include gzfile support.                                   *
-*    2008.02.15  updated to be interface compatible with old CodeGear zlib   *
+*    2008.02.15  updated to be interface compatible with old codegear zlib   *
 *                while not changing new zlib 1.2.3 interface                 *
 *    2006.04.21  updated with latest Borland C++ 2006 SP2                    *
 *    2005.02.03  updated with latest zlib 1.2.2, thanks to Fabio Dell'Aria   *
-*                (www.eurekalog.com) for providing me the compiled objects     *
+*                (www.eurekalog.com) for provide me the compiled objects     *
 *                zlib is compiled without crc32-compressBound                *
 *    2003.12.18  updated with latest zlib 1.2.1 (see www.zlib.org)           *
-*                objects compiled with fastest speed optimizations (bcc 5.6.4) *
-*                (hint: see BASM newsgroup about a Move RTL fast replacement) *
+*                obj's compiled with fastest speed optimizations (bcc 5.6.4) *
+*                (hint:see basm newsgroup about a Move RTL fast replacement) *
 *                Thanks to Cosmin Truta for the pascal zlib reference        *
 *                                                                            *
 *    2002.11.02  ZSendToBrowser: deflate algorithm for HTTP1.1 compression   *
 *    2002.10.24  ZFastCompressString and ZFastDecompressString:300% faster   *
-*    2002.10.15  recompiled zlib 1.1.4 C sources with speed optimizations    *
-*                (and targeting 686+ cpu) and changes to accommodate Borland  *
+*    2002.10.15  recompiled zlib 1.1.4 c sources with speed optimizations    *
+*                (and targeting 686+ cpu) and changes to accomodate Borland  *
 *                standards  (C++ v5.6 compiler)                              *
-*    2002.10.15  optimized move memory for unaligned structures  (strings, etc.)*
+*    2002.10.15  optimized move mem for not aligned structures  (strings,etc)*
 *    2002.10.15  little changes to avoid system unique string calls          *
 *                                                                            *
 *    2002.03.15  updated to zlib version 1.1.4                               *
@@ -56,7 +56,7 @@
 *                                                                            *
 *  acknowledgements                                                          *
 *    erik turner    Z*Stream routines                                        *
-*    david bennion  finding the nasty little endless loop quirk with the    *
+*    david bennion  finding the nastly little endless loop quirk with the    *
 *                     TZDecompressionStream.Read method                      *
 *    burak kalayci  informing me about the zlib 1.1.4 update                 *
 *****************************************************************************}
@@ -108,7 +108,9 @@ interface
   {.$DEFINE USE_CDECL}
 {$IFEND}
 
-{$IF ( CompilerVersion >= 31 ) AND ( CompilerVersion <= 32 )} // 10.1 Berlin, 10.2 Tokyo
+{$DEFINE ZLIB_132}
+
+{$IF ( CompilerVersion >= 30 ) AND ( CompilerVersion <= 32 )} // 10 Seattle - 10.2 Tokyo
   {$DEFINE OBJ_EXTENSION_FOR_x64}
 {$IFEND}
 
@@ -166,7 +168,7 @@ const
   ZLIB_VERNUM = $12B0;
   ZLIB_VER_MAJOR = 1;
   ZLIB_VER_MINOR = 2;
-  ZLIB_VER_REVISION = 11;
+  ZLIB_VER_REVSION = 11;
   ZLIB_VER_SUBREVISION = 0;
 
 (*
@@ -384,7 +386,7 @@ function deflate(var strm: z_stream; flush: Integer): Integer; {$IFDEF USE_CDECL
     processing will resume at this point for the next call of deflate().
 
   - Generate more output starting at next_out and update next_out and avail_out
-    accordingly.  This action is forced if the parameter flush is non-zero.
+    accordingly.  This action is forced if the parameter flush is non zero.
     Forcing flush frequently degrades the compression ratio, so this parameter
     should be set only when necessary.  Some output may be provided even if
     flush is zero.
@@ -397,7 +399,7 @@ function deflate(var strm: z_stream; flush: Integer): Integer; {$IFDEF USE_CDECL
   == 0), or after each call of deflate().  If deflate returns Z_OK and with
   zero avail_out, it must be called again after making room in the output
   buffer because there might be more output pending. See deflatePending(),
-  which can be used if desired to determine whether or not there is more output
+  which can be used if desired to determine whether or not there is more ouput
   in that case.
 
     Normally the parameter flush is set to Z_NO_FLUSH, which allows deflate to
@@ -855,7 +857,7 @@ function deflateParams(var strm: z_stream;
    Then no more input data should be provided before the deflateParams() call.
    If this is done, the old level and strategy will be applied to the data
    compressed before deflateParams(), and the new level and strategy will be
-   applied to the data compressed after deflateParams().
+   applied to the the data compressed after deflateParams().
 
      deflateParams returns Z_OK on success, Z_STREAM_ERROR if the source stream
    state was inconsistent or if a parameter was invalid, or Z_BUF_ERROR if
@@ -940,7 +942,7 @@ function deflateSetHeader(var strm: z_stream; var head: gz_header): Integer; {$I
    a zero byte, and that if extra is not Z_NULL, that extra_len bytes are
    available there.  If hcrc is true, a gzip header crc is included.  Note that
    the current versions of the command-line version of gzip (up through version
-   1.3.x) do not support header CRCs, and will report that it is a "multi-part
+   1.3.x) do not support header crc's, and will report that it is a "multi-part
    gzip file" and give up.
 
      If deflateSetHeader is not used, the default gzip header has text false,
@@ -1016,7 +1018,7 @@ function inflateSetDictionary(var strm: z_stream;
    deflateSetDictionary).  For raw inflate, this function can be called at any
    time to set the dictionary.  If the provided dictionary is smaller than the
    window and there is already data in the window, then the provided dictionary
-   will amend what's there.  The application must ensure that the dictionary
+   will amend what's there.  The application must insure that the dictionary
    that was used for compression is provided.
 
      inflateSetDictionary returns Z_OK if success, Z_STREAM_ERROR if a
@@ -1057,7 +1059,7 @@ function inflateSync(var strm: z_stream): Integer; {$IFDEF USE_CDECL}cdecl;{$END
      inflateSync returns Z_OK if a possible full flush point has been found,
    Z_BUF_ERROR if no more input was provided, Z_DATA_ERROR if no flush point
    has been found, or Z_STREAM_ERROR if the stream structure was inconsistent.
-   In the success case, the application may save the current value of
+   In the success case, the application may save the current current value of
    total_in which indicates where valid compressed data was found.  In the
    error case, the application may repeatedly call inflateSync, providing more
    input each time, until success or end of the input data.
@@ -2155,7 +2157,7 @@ procedure ZCompressStream(inStream, outStream: TStream;
 procedure ZDecompressStream(inStream, outStream: TStream);
 {$IFEND Classes}
 
-// CG: Routines from old version of ZLib required for CodeGear backward compatibility
+// CG: Routines from old version of ZLib required for CodeGear backwards compatability
 function zlibAllocMem(AppData: Pointer; Items, Size: Cardinal): Pointer; {$IFDEF USE_CDECL}cdecl;{$ENDIF}
 procedure zlibFreeMem(AppData, Block: Pointer); {$IFDEF USE_CDECL}cdecl;{$ENDIF}
 
@@ -2170,7 +2172,7 @@ type
 {$IFEND}
 
 const
-  {** return code messages **************************************************}
+  {** return code messages **************************************************}  
   _z_errmsg: array [0..9] of PAnsiChar = (
     'need dictionary',      // Z_NEED_DICT      (2)  //do not localize
     'stream end',           // Z_STREAM_END     (1)  //do not localize
@@ -2183,7 +2185,21 @@ const
     'incompatible version', // Z_VERSION_ERROR  (-6) //do not localize
     ''                                               //do not localize
     );
-
+  {$IF NOT Declared(z_errmsg) AND ( CompilerVersion < 23 )}
+  z_errmsg: array [0..9] of PAnsiChar = (
+    'need dictionary',      // Z_NEED_DICT      (2)  //do not localize
+    'stream end',           // Z_STREAM_END     (1)  //do not localize
+    '',                     // Z_OK             (0)  //do not localize
+    'file error',           // Z_ERRNO          (-1) //do not localize
+    'stream error',         // Z_STREAM_ERROR   (-2) //do not localize
+    'data error',           // Z_DATA_ERROR     (-3) //do not localize
+    'insufficient memory',  // Z_MEM_ERROR      (-4) //do not localize
+    'buffer error',         // Z_BUF_ERROR      (-5) //do not localize
+    'incompatible version', // Z_VERSION_ERROR  (-6) //do not localize
+    ''                                               //do not localize
+    );  
+  {$IFEND}
+    
   ZLevels: array[TZCompressionLevel] of Shortint = (
     Z_NO_COMPRESSION,
     Z_BEST_SPEED,
@@ -3111,7 +3127,6 @@ type
   size_t = Longint; // NativeInt;
   va_list = Pointer;
 
-{$IF ( CompilerVersion < 23 )}
 function _memcpy(dest, src: Pointer; count: size_t): Pointer; cdecl;
 begin
   Move(src^, dest^, count);
@@ -3124,7 +3139,6 @@ begin
   Result := dest;
 end;
 
-{$ELSE}
 function memcpy(dest, src: Pointer; count: size_t): Pointer; cdecl;
 begin
   Move(src^, dest^, count);
@@ -3137,6 +3151,32 @@ begin
   Result := dest;
 end;
 
+// gzwrite (zlib >= 1.2.x)
+function memmove(dest, src: Pointer; count: size_t): Pointer; cdecl;
+begin
+  Move(src^, dest^, count);
+  Result := dest;
+end;
+
+{$IFNDEF Win64}
+procedure _llmod; cdecl;
+asm
+  jmp System.@_llmod;
+end;
+
+{$IFNDEF USE_CDECL}
+
+procedure __llmod; cdecl;
+asm
+  jmp System.@_llmod;
+end;
+{$ENDIF USE_CDECL}
+{$IF ( CompilerVersion < 20 ) AND Defined( ZLIB_132 )}
+procedure crc32_z; external;
+{$IFEND}
+{$ENDIF Win64}
+
+{$IF ( CompilerVersion >= 20 )}
 function malloc(size: size_t): Pointer; cdecl;
 begin
   GetMem(Result, size);
@@ -3147,24 +3187,28 @@ begin
   FreeMem(pBlock);
 end;
 
-{$IFNDEF Win64}
-procedure _llmod; cdecl;
-asm
-  jmp System.@_llmod;
-end;
-{$ENDIF Win64}
-
 const
   szMSVCRT = 'MSVCRT.DLL';
 
+{$IFDEF GZIP} // errno referenzieren NUR gzread/gzwrite (gemessen ueber alle Saetze)
+{$IFDEF ZLIB_132}
+var
+  __errno: Integer;
+{$ELSE}
 function __errno(): Integer; cdecl; external szMSVCRT name '_errno';
+{$ENDIF ZLIB_132}
+{$ENDIF GZIP}
 function strlen(str: PAnsiChar): size_t; cdecl; external szMSVCRT;
 function vsnprintf(buffer: PAnsiChar; count: size_t; format: PAnsiChar; argptr:array of const): Integer; cdecl; external szMSVCRT name '_vsnprintf';
 function _snprintf(buf: Pointer; nzize: size_t; format: PAnsiChar; param: va_list): Integer; cdecl; external szMSVCRT;
+function snprintf(buf: Pointer; nzize: size_t; format: PAnsiChar): Integer; cdecl; varargs; external szMSVCRT name '_snprintf';
 function wcstombs(s:Pointer; const pwcs:Pointer; n:Integer):Integer; cdecl; external szMSVCRT;
 function open(const __path: PAnsiChar; __access: Integer; __permission: Integer): Integer; cdecl; external szMSVCRT name '_open';
 function _wopen(const __path: PChar; __access: Integer; __permission: Integer): Integer; cdecl; external szMSVCRT;
 function lseek(__handle: Integer; __offset: Integer; __fromwhere: Integer): Integer; cdecl; external szMSVCRT name '_lseek';
+function read(__handle: Integer; __buf: Pointer; __len: LongWord): Integer; cdecl; external szMSVCRT name '_read';
+function write(__handle: Integer; __buf: Pointer; __len: LongWord): Integer; cdecl; external szMSVCRT name '_write';
+function close(__handle: Integer): Integer; cdecl; external szMSVCRT name '_close';
 
 function memchr(s: Pointer; c: Integer; n: size_t): Pointer; cdecl; external szMSVCRT;
 function strerror(__errnum: Integer): PAnsiChar; cdecl; external szMSVCRT;
